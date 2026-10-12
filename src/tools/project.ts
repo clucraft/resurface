@@ -74,6 +74,10 @@ export async function saveProject(app: App): Promise<void> {
 export async function openProject(app: App): Promise<void> {
   const [file] = await pickFiles(".rsf", false);
   if (!file) return;
+  await openProjectFile(app, file);
+}
+
+export async function openProjectFile(app: App, file: File): Promise<void> {
   await app.busy(`Opening ${file.name}`, async () => {
     const entities = deserializeProject(new Uint8Array(await file.arrayBuffer()));
     for (const e of entities) if (e.kind === "mesh") markPrepared((e as MeshEntity).mesh);

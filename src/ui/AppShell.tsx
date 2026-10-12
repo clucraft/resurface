@@ -6,7 +6,9 @@ import { ModelTree } from "./ModelTree";
 import { Viewport } from "./Viewport";
 import { PropertyPanel } from "./PropertyPanel";
 import { StatusBar, Toasts } from "./StatusBar";
-import { executeCommand, importFiles } from "../tools/registry";
+import { executeCommand, importFiles, loadSample } from "../tools/registry";
+import { desktop, toFile } from "../app/desktop";
+import type { SampleId } from "../samples/samples";
 
 export function AppShell() {
   const [about, setAbout] = useState(false);
@@ -35,6 +37,37 @@ export function AppShell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Desktop shell: native menu commands and files opened from Explorer
+  useEffect(() => {
+    if (!desktop) return;
+    const offMenu = desktop.onMenu((cmd) => {
+      if (cmd === "undo") app.doc.undo();
+      else if (cmd === "redo") app.doc.redo();
+      else if (cmd === "about") setAbout(true);
+      else if (cmd === "newProject") {
+        if (!app.doc.all().length || confirm("Discard the current project?")) {
+          void app.endTool(false);
+          app.doc.reset([]);
+        }
+      } else if (cmd.startsWith("sample:")) void loadSample(app, cmd.slice(7) as SampleId);
+      else if (cmd.startsWith("view:")) {
+        const v = cmd.slice(5);
+        if (v === "fit") app.viewer?.fitAll();
+        else app.viewer?.fitAll(v as "iso" | "top" | "front" | "right");
+      } else void executeCommand(app, cmd);
+    });
+    const offOpen = desktop.onOpenFiles((files) => {
+      const project = files.find((f) => f.name.toLowerCase().endsWith(".rsf") && f.data);
+      if (project) void import("../tools/project").then((m) => m.openProjectFile(app, toFile(project)));
+      const scans = files.filter((f) => !f.name.toLowerCase().endsWith(".rsf") && f.data).map(toFile);
+      if (scans.length) void importFiles(app, scans);
+    });
+    return () => {
+      offMenu();
+      offOpen();
+    };
   }, []);
 
   return (

@@ -1,9 +1,12 @@
 {
   "name": "resurface",
+  "productName": "Resurface",
   "private": true,
   "version": "0.1.0",
   "description": "Resurface — scan-to-CAD reverse engineering: turn 3D scans into editable CAD surfaces and solids.",
+  "author": "Resurface",
   "type": "module",
+  "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
     "dev:stable": "vite --mode nohmr",
@@ -11,15 +14,10 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
-  },
-  "dependencies": {
-    "lucide-react": "^1.55.0",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "replicad-opencascadejs": "1.1.0",
-    "three": "^0.186.1",
-    "three-mesh-bvh": "^0.9.16"
+    "test:watch": "vitest",
+    "desktop": "vite build && electron .",
+    "desktop:dev": "set RESURFACE_DEV_URL=http://localhost:5173&& electron .",
+    "dist:win": "vite build && electron-builder --win --x64"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -27,8 +25,69 @@
     "@types/react-dom": "^19.3.0",
     "@types/three": "^0.186.0",
     "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
+    "lucide-react": "^1.55.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "replicad-opencascadejs": "1.1.0",
+    "three": "^0.186.1",
+    "three-mesh-bvh": "^0.9.16",
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
     "vitest": "^5.0.4"
+  },
+  "build": {
+    "appId": "com.resurface.desktop",
+    "productName": "Resurface",
+    "copyright": "Copyright © 2026 Resurface",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "Resurface-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Resurface"
+    },
+    "fileAssociations": [
+      {
+        "ext": [
+          "stl",
+          "obj",
+          "ply",
+          "ptx"
+        ],
+        "name": "3D scan",
+        "role": "Viewer"
+      },
+      {
+        "ext": "rsf",
+        "name": "Resurface project",
+        "role": "Editor"
+      }
+    ]
   }
 }
