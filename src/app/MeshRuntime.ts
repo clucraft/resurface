@@ -4,7 +4,8 @@
  * object changes (meshes are immutable snapshots).
  */
 import type { MeshData, Vec3 } from "../core/types";
-import { MeshSpatialIndex, buildChunks } from "../mesh/spatial";
+import { MeshSpatialIndex, buildChunks, type SerializedSpatialIndex } from "../mesh/spatial";
+import { compute } from "./compute";
 import { buildTriangleNeighbors } from "../mesh/topology";
 import type { MeshChunk, MeshView } from "../viewer/MeshView";
 import { prepareMeshData } from "./prepare";
@@ -37,12 +38,32 @@ export class MeshRuntime {
   private flushQueued = false;
   onSelectionChanged: (() => void) | null = null;
 
+  /** above this size the BVH / adjacency are built in a worker right after the mesh appears */
+  static BACKGROUND_THRESHOLD = 600_000;
+  private disposed = false;
+  /** resolves when background indexing has finished (or immediately for small meshes) */
+  readonly indexed: Promise<void>;
+  onIndexed: (() => void) | null = null;
+
   constructor(
     readonly entityId: string,
     readonly mesh: MeshData,
   ) {
     this.chunks = buildChunks(mesh, CHUNK_TRIANGLES) as MeshChunk[];
     this.selection = new Uint8Array(mesh.indices.length / 3);
+    this.indexed = this.triangleCount >= MeshRuntime.BACKGROUND_THRESHOLD ? this.indexInBackground() : Promise.resolve();
+  }
+
+  /** Build the BVH and triangle adjacency in compute workers (UI stays responsive). */
+  private async indexInBackground(): Promise<void> {
+    const [bvh, nbr] = await Promise.allSettled([
+      compute.run<SerializedSpatialIndex>("spatialIndex", { mesh: this.mesh }),
+      compute.run<Int32Array>("neighbors", { mesh: this.mesh }),
+    ]);
+    if (this.disposed) return;
+    if (bvh.status === "fulfilled" && !this._spatial) this._spatial = new MeshSpatialIndex(this.mesh, { serialized: bvh.value });
+    if (nbr.status === "fulfilled" && !this._neighbors) this._neighbors = nbr.value;
+    this.onIndexed?.();
   }
 
   get triangleCount(): number {
@@ -53,7 +74,7 @@ export class MeshRuntime {
     return this.mesh.positions.length / 3;
   }
 
-  /** Spatial index, built on first use. */
+  /** Spatial index (built synchronously if background indexing has not finished yet). */
   get spatial(): MeshSpatialIndex {
     if (!this._spatial) this._spatial = new MeshSpatialIndex(this.mesh);
     return this._spatial;
@@ -70,7 +91,9 @@ export class MeshRuntime {
     return !!this._spatial;
   }
 
+  /** Picking: never blocks — returns null while a large mesh is still being indexed. */
   raycast = (origin: Vec3, dir: Vec3) => {
+    if (!this._spatial && this.triangleCount >= MeshRuntime.BACKGROUND_THRESHOLD) return null;
     const hit = this.spatial.raycast(origin, dir);
     if (!hit) return null;
     return { point: hit.point, normal: hit.normal, distance: hit.distance, faceIndex: hit.faceIndex ?? -1 };
@@ -179,6 +202,7 @@ export class MeshRuntime {
   }
 
   dispose(): void {
+    this.disposed = true;
     this._spatial?.dispose();
     this._spatial = null;
     this.view = null;

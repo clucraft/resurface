@@ -35,6 +35,17 @@ export interface SpatialIndexOptions {
   /** 'sah' (slower build, faster queries) or 'center' (default, fast build) */
   strategy?: "center" | "sah";
   onProgress?: ProgressFn;
+  /** allocate BVH buffers in SharedArrayBuffers (so a worker-built index can be shared without copying) */
+  shared?: boolean;
+  /** adopt a BVH built elsewhere (see serialize()); skips the build */
+  serialized?: SerializedSpatialIndex;
+}
+
+/** Transferable form of a built index (BVH node buffers + indirect triangle permutation). */
+export interface SerializedSpatialIndex {
+  version: number;
+  roots: ArrayBufferLike[];
+  indirectBuffer: Uint32Array | null;
 }
 
 export class MeshSpatialIndex {
@@ -53,12 +64,24 @@ export class MeshSpatialIndex {
     geometry.setAttribute("position", new BufferAttribute(mesh.positions, 3));
     geometry.setIndex(new BufferAttribute(mesh.indices, 1));
     this.geometry = geometry;
-    this.bvh = new MeshBVH(geometry, {
-      indirect: true,
-      targetLeafSize: opts.leafSize ?? 10,
-      strategy: opts.strategy === "sah" ? SAH : CENTER,
-      onProgress: opts.onProgress ? (p: number) => opts.onProgress!(p, "Building spatial index") : undefined,
-    });
+    if (opts.serialized) {
+      const data = { ...opts.serialized, index: null } as unknown as Parameters<typeof MeshBVH.deserialize>[0];
+      this.bvh = MeshBVH.deserialize(data, geometry, { setIndex: false });
+    } else {
+      this.bvh = new MeshBVH(geometry, {
+        indirect: true,
+        targetLeafSize: opts.leafSize ?? 10,
+        strategy: opts.strategy === "sah" ? SAH : CENTER,
+        useSharedArrayBuffer: !!opts.shared,
+        onProgress: opts.onProgress ? (p: number) => opts.onProgress!(p, "Building spatial index") : undefined,
+      });
+    }
+  }
+
+  /** Buffers of the built BVH (not copied) — rebuild elsewhere with `new MeshSpatialIndex(mesh, { serialized })`. */
+  serialize(): SerializedSpatialIndex {
+    const s = MeshBVH.serialize(this.b, { cloneBuffers: false }) as unknown as { version?: number; roots: ArrayBufferLike[]; indirectBuffer: Uint32Array | null };
+    return { version: s.version ?? 1, roots: s.roots, indirectBuffer: s.indirectBuffer };
   }
 
   private get b(): MeshBVH {

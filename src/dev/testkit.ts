@@ -6,6 +6,9 @@
  */
 import type { Vec3 } from "../core/types";
 import { app } from "../app/App";
+import { compute } from "../app/compute";
+import { markPrepared } from "../app/MeshRuntime";
+import type { MeshData } from "../core/types";
 
 function buttonsByText(text: string): HTMLElement[] {
   const all = [...document.querySelectorAll<HTMLElement>("button, .item")];
@@ -76,6 +79,48 @@ export const rsTest = {
     const t0 = performance.now();
     await sleep(50);
     while (app.ui.get().busy && performance.now() - t0 < timeoutMs) await sleep(50);
+  },
+  /** Generate a large synthetic scan and report timings of the main interactive paths. */
+  async bigMesh(triangles: number) {
+    const t: Record<string, number> = {};
+    let t0 = performance.now();
+    const res = await compute.run<{ mesh: MeshData; timings: Record<string, number> }>("bigTest", { triangles });
+    t.workerTotal = performance.now() - t0;
+    Object.assign(t, res.timings);
+    markPrepared(res.mesh);
+    t0 = performance.now();
+    const e = app.addMesh(`Big ${Math.round(triangles / 1e6)}M`, res.mesh, "perf");
+    t.addEntity = performance.now() - t0;
+    app.viewer!.fitAll("iso");
+    t0 = performance.now();
+    app.viewer!.renderNow();
+    (app.viewer!.renderer.getContext() as WebGL2RenderingContext).finish();
+    t.firstRender = performance.now() - t0;
+    t0 = performance.now();
+    app.viewer!.renderNow();
+    (app.viewer!.renderer.getContext() as WebGL2RenderingContext).finish();
+    t.secondRender = performance.now() - t0;
+    const rt = app.sync!.meshRuntime(e.id)!;
+    t0 = performance.now();
+    await rt.indexed;
+    t.backgroundIndexing = performance.now() - t0;
+    t0 = performance.now();
+    void rt.spatial;
+    t.bvhOnUiThread = performance.now() - t0;
+    t0 = performance.now();
+    const hit = rt.raycast([0, -300, 0], [0, 1, 0]);
+    t.raycast = performance.now() - t0;
+    t0 = performance.now();
+    const tris = rt.spatial.trianglesInSphere(hit!.point, 5);
+    t.sphereQuery = performance.now() - t0;
+    t0 = performance.now();
+    rt.applyTriangles(tris, "add");
+    rt.flush();
+    t.selectionUpdate = performance.now() - t0;
+    t0 = performance.now();
+    void rt.neighbors;
+    t.neighbors = performance.now() - t0;
+    return { triangles: rt.triangleCount, chunks: rt.chunks.length, selected: tris.length, ms: Object.fromEntries(Object.entries(t).map(([k, v]) => [k, Math.round(v)])) };
   },
   state() {
     const ui = app.ui.get();

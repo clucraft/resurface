@@ -25,6 +25,18 @@ const jobs: Record<string, Job> = {
     const { prepareMeshData } = await import("../app/prepare");
     return prepareMeshData(makeSample(id));
   },
+  /** dev/perf: large synthetic scan, prepared */
+  async bigTest({ triangles }: { triangles: number }, progress) {
+    const { bumpySphere } = await import("../dev/bigmesh");
+    const { prepareMeshData } = await import("../app/prepare");
+    const t0 = performance.now();
+    const m = bumpySphere(triangles);
+    const t1 = performance.now();
+    progress(0.5, "Preparing");
+    const p = prepareMeshData(m);
+    const t2 = performance.now();
+    return { mesh: p, timings: { generate: t1 - t0, prepare: t2 - t1 } };
+  },
   async prepare({ mesh, keepOrder }: { mesh: MeshData; keepOrder?: boolean }) {
     const { prepareMeshData } = await import("../app/prepare");
     return prepareMeshData(mesh, { keepOrder });
@@ -110,6 +122,16 @@ const jobs: Record<string, Job> = {
     index.dispose();
     return { cage: res.cage, rms: res.rms, maxDev: res.maxDev };
   },
+  /** Build the BVH off the UI thread; buffers are shared (SAB) or transferred back. */
+  async spatialIndex({ mesh }: { mesh: MeshData }) {
+    const { MeshSpatialIndex } = await import("../mesh/spatial");
+    const index = new MeshSpatialIndex(mesh, { shared: sharedMemoryAvailable() });
+    return index.serialize();
+  },
+  async neighbors({ mesh }: { mesh: MeshData }) {
+    const { buildTriangleNeighbors } = await import("../mesh/topology");
+    return buildTriangleNeighbors(mesh);
+  },
   async boundaryLoops({ mesh }: { mesh: MeshData }) {
     const { findBoundaryLoops } = await import("../mesh/topology");
     return findBoundaryLoops(mesh);
@@ -133,6 +155,11 @@ const jobs: Record<string, Job> = {
 /** Move typed arrays inside a result to shared memory, or collect transferables. */
 function prepareResult(value: unknown, transfer: Transferable[], depth = 0): unknown {
   if (depth > 4 || value === null || typeof value !== "object") return value;
+  if (value instanceof ArrayBuffer) {
+    if (!transfer.includes(value)) transfer.push(value);
+    return value;
+  }
+  if (typeof SharedArrayBuffer !== "undefined" && value instanceof SharedArrayBuffer) return value;
   if (ArrayBuffer.isView(value)) {
     const ta = value as Float32Array;
     if (ta.buffer instanceof SharedArrayBuffer) return ta;

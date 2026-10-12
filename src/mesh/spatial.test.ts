@@ -135,3 +135,21 @@ describe("spatial ordering & chunks", () => {
     expect(maxV).toBeLessThan(256 * 3);
   });
 });
+
+describe("MeshSpatialIndex serialization", () => {
+  it("rebuilds an identical index from serialized buffers (worker hand-off)", () => {
+    const mesh = makeIcosphere(5, 5);
+    const built = new MeshSpatialIndex(mesh);
+    const copy = new MeshSpatialIndex(mesh, { serialized: built.serialize() });
+    const rnd = seededRandom(3);
+    for (let i = 0; i < 50; i++) {
+      const p: [number, number, number] = [(rnd() - 0.5) * 30, (rnd() - 0.5) * 30, (rnd() - 0.5) * 30];
+      const a = built.closestPoint(p)!, b = copy.closestPoint(p)!;
+      expect(b.faceIndex).toBe(a.faceIndex);
+      expect(b.distance).toBeCloseTo(a.distance, 9);
+      const dir: [number, number, number] = [-p[0], -p[1], -p[2]];
+      expect(copy.raycast(p, dir)?.faceIndex).toBe(built.raycast(p, dir)?.faceIndex);
+    }
+  });
+});
+
