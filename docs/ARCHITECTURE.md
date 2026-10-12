@@ -34,7 +34,11 @@ Windows desktop app with Electron (the same build runs in a browser).
 | `src/viewer/` | Three.js viewport, camera control, picking, overlays, gizmos |
 | `src/tools/` | Interactive commands (one per tool), each with a property panel |
 | `src/ui/` | React app shell: ribbon, model tree, property panel, status bar, dialogs |
-| `electron/` | Desktop packaging |
+| `src/app/` | App controller, scene sync, mesh runtimes (chunks, BVH, selection), feature evaluation, compute-worker pool |
+| `src/workers/` | Compute worker (import, decimation, repair, deviation, autosurface, background BVH builds) |
+| `src/samples/` | Procedural sample scans (SDF + Surface Nets) |
+| `src/dev/` | Dev-only UI automation kit and performance probes |
+| `electron/` | Desktop shell: `app://` protocol with cross-origin isolation, native menus/dialogs, installer |
 
 ## Runtime architecture
 
@@ -50,3 +54,12 @@ Tools (active command) ───────────────────
       ├── algorithm modules (mesh / fit / sketch / freeform) — sync or in compute worker
       └── KernelClient ──RPC──► kernel.worker (OCCT wasm) ──► STEP/IGES/tessellation
 ```
+
+## Scale design (20M+ triangles)
+
+* Meshes are immutable typed-array snapshots kept in SharedArrayBuffers (the page is
+  cross-origin isolated), so compute workers read them without copying.
+* At import, triangles are sorted along a Morton curve; contiguous ranges become render chunks
+  (frustum-culled, shared vertex buffers) and selection overlays rebuild per chunk.
+* Large meshes get their BVH and adjacency built in workers in the background; a decimated LOD
+  proxy is drawn while the camera moves.
