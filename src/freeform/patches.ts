@@ -15,14 +15,16 @@
  * For valence-4 vertices (and regular boundary / crease / corner configurations, where the
  * effective valence n is 4) these masks are exactly the uniform bicubic B-spline -> Bézier
  * conversion, so patches of regular faces reproduce the limit surface exactly and join C2.
- * Around extraordinary vertices the patches are Loop–Schaefer ACC geometry patches; additionally
- * (option `tangentPlaneEdges`, default on) the edge points around an extraordinary vertex are
- * projected into its limit tangent plane, which makes all patches meeting there share the exact
- * limit normal (G1 at the corner, approximately G1 along the edges).
+ * Around extraordinary vertices the patches start from Loop–Schaefer ACC geometry patches; with
+ * option `g1Seams` (default on) the control points next to each extraordinary vertex are then
+ * adjusted to satisfy the sufficient G1 conditions d_A + d_B = alpha(t) c'(t) row by row (exact
+ * limit tangent plane at the vertex, near-G1 along the seams: measured < 0.4° vs 4–8° for plain
+ * ACC on test cages), still without touching any control point of an exact (regular) patch.
  */
+import { solveLinear } from "../core/linalg";
 import type { BSplineSurfaceDef, Vec3 } from "../core/types";
 import { add, cross, dot, length, normalize, scale, sub } from "../core/vec";
-import { subdivideWithMap, vertexSectorNormals } from "./catmullClark";
+import { smoothLimitTangents, subdivideWithMap, vertexSectorNormals } from "./catmullClark";
 import {
   buildTopology,
   EdgeSharpness,
@@ -38,8 +40,13 @@ import {
 } from "./quadMesh";
 
 export interface PatchOptions {
-  /** project edge control points around extraordinary vertices into the limit tangent plane (default true) */
-  tangentPlaneEdges?: boolean;
+  /**
+   * Near-G1 seams around extraordinary vertices (default true): edge control points on the exact
+   * limit tangent directions and interior points satisfying the G1 conditions of the first Bézier
+   * rows (see g1Correction). false = plain Loop–Schaefer ACC geometry patches (C0 at seams near
+   * extraordinary vertices). Regular (exact) patches are identical in both modes.
+   */
+  g1Seams?: boolean;
 }
 
 export interface PatchSet {
@@ -92,24 +99,13 @@ function effectiveValence(topo: Topology, P: Vec3[], info: CornerInfo, h: number
     const n = valenceOf(topo, v);
     return { n, regular: kind === VertexKind.Smooth && n === 4 };
   }
+  // Boundary / crease / corner sectors: the boundary-curve rules give subdominant eigenvalue 1/2
+  // for any sector size, so the regular mask (n = 4) is used; it is exact for regular sectors
+  // (crease: 2 faces, corner: 1 face) and measured best for irregular ones (vs n = 2k, k + 2).
   const { sector } = sectorOf(info, h);
   const k = sector ? sector.faceIdx.length : 1;
-  if (kind === VertexKind.Crease) return { n: k === 2 ? 4 : 2 * k, regular: k === 2 };
-  // corner
-  if (k === 1) return { n: 4, regular: true };
-  // angle-based effective valence for multi-face corner sectors
-  let alpha = 0;
-  if (sector) {
-    const V = P[v];
-    for (const fi of sector.faceIdx) {
-      const hh = info.ring.faceHe[fi];
-      const a = sub(P[topo.heV[topo.heNext[hh]]], V), b = sub(P[topo.heV[topo.hePrev[hh]]], V);
-      const c = dot(a, b) / Math.max(1e-300, length(a) * length(b));
-      alpha += Math.acos(Math.max(-1, Math.min(1, c)));
-    }
-  }
-  const n = alpha > 1e-6 ? Math.max(2 * k, Math.min(4 * k, (2 * Math.PI * k) / alpha)) : 2 * k;
-  return { n, regular: false };
+  if (kind === VertexKind.Crease) return { n: 4, regular: k === 2 };
+  return { n: 4, regular: k === 1 };
 }
 
 function bezierSurface(B: Vec3[]): BSplineSurfaceDef {
@@ -138,10 +134,9 @@ function computePatchData(mesh: QuadMesh, opts: PatchOptions): PatchData {
   const topo = buildTopology(mesh);
   const P = mesh.vertices;
   const nv = topo.nv;
-  const project = opts.tangentPlaneEdges !== false;
+  const project = opts.g1Seams !== false;
   const info: CornerInfo[] = new Array(nv);
   const corner: Vec3[] = new Array(nv);
-  const normal: (Vec3 | null)[] = new Array(nv).fill(null);
   for (let v = 0; v < nv; v++) {
     const ci = cornerInfo(topo, v);
     info[v] = ci;
@@ -159,7 +154,6 @@ function computePatchData(mesh: QuadMesh, opts: PatchOptions): PatchData {
       for (const nb of ci.ring.nbr) s = add(s, scale(P[nb], 4));
       for (const h of ci.ring.faceHe) s = add(s, P[topo.heV[topo.heNext[topo.heNext[h]]]]);
       corner[v] = scale(s, 1 / (n * (n + 5)));
-      if (project && ci.kind === VertexKind.Smooth && n !== 4) normal[v] = vertexSectorNormals(topo, P, v).normals[0] ?? null;
     }
   }
   const interior: Vec3[] = new Array(topo.nh);
@@ -196,13 +190,151 @@ function computePatchData(mesh: QuadMesh, opts: PatchOptions): PatchData {
       const h1 = topo.heV[h0] === v ? h0 : topo.heTwin[h0];
       const h2 = topo.heNext[topo.heTwin[h1]];
       const p1 = interior[h1], p2 = interior[h2];
-      let ep: Vec3 = [(p1[0] + p2[0]) * 0.5, (p1[1] + p2[1]) * 0.5, (p1[2] + p2[2]) * 0.5];
-      const N = normal[v];
-      if (N) ep = sub(ep, scale(N, dot(sub(ep, corner[v]), N)));
-      edgePt[2 * e + s] = ep;
+      edgePt[2 * e + s] = [(p1[0] + p2[0]) * 0.5, (p1[1] + p2[1]) * 0.5, (p1[2] + p2[2]) * 0.5];
     }
   }
+  if (project) g1Correction(topo, P, info, corner, interior, edgePt);
   return { topo, P, info, corner, interior, edgePt, regularCorner };
+}
+
+/**
+ * Improve tangent continuity around irregular vertices without touching any control point of an
+ * exact (regular) patch. Uses the sufficient G1 condition across an edge with shared boundary
+ * curve c(t):  d_A(t) + d_B(t) = alpha(t) c'(t)  (d_X = cross-boundary derivative into patch X,
+ * alpha linear from alpha0 at v to alpha1 at w), imposed row by row on the Bézier nets.
+ *
+ * "Jobs" are smooth extraordinary vertices / darts (full ring, angles 2πj/n) and crease or
+ * boundary sectors with >= 3 faces (half ring, angles πj/k, the crease edges keep their exact
+ * B-spline curve points). For each job:
+ *  - row 0: edge points are placed on the limit tangent directions
+ *      e_j = p + cos(θ_j) U + sin(θ_j) W
+ *    (smooth: U, W = lambda * limit tangents t1, t2 from the tangent masks, lambda fitted to the
+ *    ACC edge points; crease: U = crease curve tangent fixed by the curve, W = fitted cross
+ *    tangent). Then e_{j-1} + e_{j+1} - 2p = alpha0 (e_j - p), alpha0 = 2cos(Δθ): all patches at the
+ *    vertex share its limit tangent plane.
+ *  - row 2 at the far end w of each edge (when w is not itself a job, i.e. alpha1 = 0): w's edge
+ *    point is slid along the edge by alpha0 c2 / (alpha0 - 6), which satisfies that row exactly.
+ *  - row 1: the interior points x at the vertex solve, in the least-squares sense with a tiny
+ *    regularisation towards ACC,  x_a + x_b = 2 e_j + (2 alpha0 c1 + alpha1 c0) / 3  per edge
+ *    (exact for odd valence; even valence is the classical vertex-enclosure obstruction).
+ */
+function g1Correction(topo: Topology, P: Vec3[], info: CornerInfo[], corner: Vec3[], interior: Vec3[], edgePt: Vec3[]): void {
+  const nv = topo.nv;
+  const edgeSlot = (e: number, v: number) => 2 * e + (topo.edgeV[2 * e] === v ? 0 : 1);
+  const alphaSlot = new Float64Array(2 * topo.ne).fill(NaN);
+  interface Job {
+    v: number;
+    /** interior-point half-edges (one per face of the job) */
+    faces: number[];
+    /** edges with the positions (in `faces`) of their two adjacent faces and their alpha0 */
+    edges: { e: number; w: number; a: number; b: number; alpha0: number }[];
+  }
+  const jobs: Job[] = [];
+  const isQuadFace = (h: number) => topo.faceStart[topo.heF[h] + 1] - topo.faceStart[topo.heF[h]] === 4;
+  // phase 1: tangent-direction edge points
+  for (let v = 0; v < nv; v++) {
+    const ci = info[v];
+    const ring = ci.ring;
+    if (!ring.manifold || ring.faces.length === 0 || !ring.faceHe.every(isQuadFace)) continue;
+    const p = corner[v];
+    if ((ci.kind === VertexKind.Smooth || ci.kind === VertexKind.Dart) && ring.closed) {
+      const n = ring.faces.length;
+      if ((ci.kind === VertexKind.Smooth && n === 4) || n < 3) continue;
+      const [t1, t2] = smoothLimitTangents(topo, P, ring);
+      const T: Vec3[] = [];
+      let num = 0, den = 0;
+      for (let j = 0; j < n; j++) {
+        const th = (2 * Math.PI * j) / n;
+        const Tj = add(scale(t1, Math.cos(th)), scale(t2, Math.sin(th)));
+        T.push(Tj);
+        num += dot(sub(edgePt[edgeSlot(ring.edges[j], v)], p), Tj);
+        den += dot(Tj, Tj);
+      }
+      if (!(den > 0) || !(num > 0)) continue;
+      // 1.1: empirically minimises the deviation from the limit surface (scan of 0.85..1.5 on test cages)
+      const lambda = (num / den) * 1.1;
+      const alpha0 = 2 * Math.cos((2 * Math.PI) / n);
+      const job: Job = { v, faces: ring.faceHe.slice(), edges: [] };
+      for (let j = 0; j < n; j++) {
+        const slot = edgeSlot(ring.edges[j], v);
+        edgePt[slot] = add(p, scale(T[j], lambda));
+        alphaSlot[slot] = alpha0;
+        job.edges.push({ e: ring.edges[j], w: ring.nbr[j], a: (j + n - 1) % n, b: j, alpha0 });
+      }
+      jobs.push(job);
+    } else if (ci.kind === VertexKind.Crease) {
+      let normals: Vec3[] | null = null;
+      ci.sectors.forEach((sec, si) => {
+        const k = sec.faceIdx.length;
+        if (k < 3) return;
+        normals = normals ?? vertexSectorNormals(topo, P, v).normals;
+        const N = normals[si];
+        if (!N) return;
+        // keep ACC's tangential positions, project into the sector tangent plane
+        const slots = sec.nbrIdx.map((ri) => edgeSlot(ring.edges[ri], v));
+        for (let j = 1; j < k; j++) {
+          const ep = edgePt[slots[j]];
+          edgePt[slots[j]] = sub(ep, scale(N, dot(sub(ep, p), N)));
+        }
+        const job: Job = { v, faces: sec.faceIdx.map((fi) => ring.faceHe[fi]), edges: [] };
+        for (let j = 1; j < k; j++) {
+          // per-edge alpha0: best fit of e_{j-1} + e_{j+1} - 2p = alpha0 (e_j - p)
+          const c0 = sub(edgePt[slots[j]], p);
+          const s0 = add(sub(edgePt[slots[j - 1]], p), sub(edgePt[slots[j + 1]], p));
+          const cc = dot(c0, c0);
+          const alpha0 = cc > 0 ? Math.max(-1.9, Math.min(1.9, dot(s0, c0) / cc)) : 0;
+          alphaSlot[slots[j]] = alpha0;
+          job.edges.push({ e: ring.edges[sec.nbrIdx[j]], w: ring.nbr[sec.nbrIdx[j]], a: j - 1, b: j, alpha0 });
+        }
+        jobs.push(job);
+      });
+    }
+  }
+  // phase 2: row 2 at far ends that are not jobs themselves (alpha1 = 0)
+  for (const job of jobs) {
+    for (const { e, w, alpha0 } of job.edges) {
+      const slot = edgeSlot(e, w);
+      if (!Number.isNaN(alphaSlot[slot]) || topo.edgeSharp[e] !== EdgeSharpness.None || topo.edgeFaceCount[e] !== 2) continue;
+      const kw = info[w].kind;
+      if (kw === NONMANIFOLD || kw === VertexKind.Corner) continue;
+      const c2 = sub(corner[w], edgePt[slot]);
+      edgePt[slot] = add(edgePt[slot], scale(c2, alpha0 / (alpha0 - 6)));
+    }
+  }
+  // phase 3: interior points (row 1)
+  for (const job of jobs) {
+    const m = job.faces.length;
+    const p = corner[job.v];
+    const AtA = new Float64Array(m * m);
+    const rhs = [new Float64Array(m), new Float64Array(m), new Float64Array(m)];
+    for (const { e, w, a, b, alpha0 } of job.edges) {
+      const ej = edgePt[edgeSlot(e, job.v)], ew = edgePt[edgeSlot(e, w)];
+      const c0 = sub(ej, p), c1 = sub(ew, ej);
+      const aw = alphaSlot[edgeSlot(e, w)];
+      const a1 = Number.isNaN(aw) ? 0 : -aw;
+      AtA[a * m + a] += 1;
+      AtA[b * m + b] += 1;
+      AtA[a * m + b] += 1;
+      AtA[b * m + a] += 1;
+      for (let k = 0; k < 3; k++) {
+        const r = 2 * ej[k] + (2 * alpha0 * c1[k] + a1 * c0[k]) / 3;
+        rhs[k][a] += r;
+        rhs[k][b] += r;
+      }
+    }
+    const mu = 1e-6;
+    for (let i = 0; i < m; i++) {
+      AtA[i * m + i] += mu;
+      const x0 = interior[job.faces[i]];
+      for (let k = 0; k < 3; k++) rhs[k][i] += mu * x0[k];
+    }
+    const sol = rhs.map((b) => solveLinear(AtA, b, m));
+    if (sol.some((x) => !x)) continue;
+    for (let i = 0; i < m; i++) {
+      const x: Vec3 = [sol[0]![i], sol[1]![i], sol[2]![i]];
+      if (x.every(Number.isFinite)) interior[job.faces[i]] = x;
+    }
+  }
 }
 
 function edgePoint(d: PatchData, e: number, v: number): Vec3 {
@@ -384,10 +516,12 @@ export function regularFaceSplineGrids(qm: QuadMesh): (Vec3[] | null)[] {
 
 /** Insert knot u once into a curve given by knots / control points (Boehm). */
 function insertKnot(knots: number[], ctrl: Vec3[], p: number, u: number): { knots: number[]; ctrl: Vec3[] } {
+  const n = ctrl.length;
   let k = -1;
   for (let i = 0; i < knots.length - 1; i++) if (knots[i] <= u && u < knots[i + 1]) k = i;
-  if (k < 0) throw new Error("insertKnot: parameter outside the knot vector");
-  const n = ctrl.length;
+  // at the end of the domain (u == knots[n]) use the last non-empty span: same result, valid indices
+  if (k > n - 1) k = n - 1;
+  if (k < p) throw new Error("insertKnot: parameter outside the knot vector");
   const Q: Vec3[] = new Array(n + 1);
   for (let i = 0; i <= k - p; i++) Q[i] = ctrl[i];
   for (let i = k - p + 1; i <= k; i++) {

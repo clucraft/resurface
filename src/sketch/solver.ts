@@ -288,7 +288,13 @@ function buildSystem(sk: Sketch): Built {
     scale = Math.max(scale, Math.abs(p.x), Math.abs(p.y));
   }
   const ents = new Map<string, SketchEntity>();
-  for (const e of sk.entities) ents.set(e.id, e);
+  // entities that reference missing points are ignored (and so are constraints on them)
+  const broken = new Set<string>();
+  for (const e of sk.entities) {
+    const pts = e.type === "line" ? [e.p1, e.p2] : e.type === "arc" ? [e.center, e.start, e.end] : e.type === "circle" ? [e.center] : e.points;
+    if (pts.some((id) => !pointBase.has(id))) broken.add(e.id);
+    else ents.set(e.id, e);
+  }
   const circleR = new Map<string, number>();
   const arcR = new Map<string, number>();
   const pp = (id: string): Pair => {
@@ -296,6 +302,7 @@ function buildSystem(sk: Sketch): Built {
     return [b, b + 1];
   };
   for (const e of sk.entities) {
+    if (broken.has(e.id)) continue;
     if (e.type === "circle") {
       circleR.set(e.id, xs.length);
       xs.push(e.radius);
@@ -319,7 +326,7 @@ function buildSystem(sk: Sketch): Built {
   const eqs: Eq[] = [];
   // implicit arc equations
   for (const e of sk.entities) {
-    if (e.type !== "arc") continue;
+    if (e.type !== "arc" || broken.has(e.id)) continue;
     const r = arcR.get(e.id);
     if (r === undefined || !pointBase.has(e.end)) continue;
     eqs.push(eqDist("", pp(e.center), pp(e.start), 0, [[r, 1]]));
@@ -360,7 +367,7 @@ function buildSystem(sk: Sketch): Built {
     r.kind === "line" ? [r.e.p1, r.e.p2] : r.kind === "arc" ? [r.e.start, r.e.end] : [];
 
   for (const c of sk.constraints) {
-    if (validateConstraint(sk, c)) {
+    if (validateConstraint(sk, c) || c.refs.some((r) => broken.has(r))) {
       invalid.push(c.id);
       continue;
     }
@@ -857,7 +864,7 @@ function solveSub(sys: SubSystem, x: Float64Array, tol: number, maxIt: number): 
   const RANK_TOL = 1e-10;
   let mu = 0;
   let it = 0;
-  let maxF = sys.evaluate(x, true);
+  sys.evaluate(x, true);
   let rank = sys.factor(0, RANK_TOL);
   let status: SolveStatus = "failed";
   while (true) {
@@ -868,7 +875,6 @@ function solveSub(sys: SubSystem, x: Float64Array, tol: number, maxIt: number): 
       if (a > allMax) allMax = a;
       if (!sys.isDropped(i) && a > keptMax) keptMax = a;
     }
-    maxF = allMax;
     if (allMax <= tol) {
       status = "ok";
       break;
@@ -917,7 +923,6 @@ function solveSub(sys: SubSystem, x: Float64Array, tol: number, maxIt: number): 
     if (Math.abs(sys.F[i]) > tol) conflicting.push(cid);
     else redundant.push(cid);
   }
-  void maxF;
   return { status, iterations: it, rank, conflicting: uniq(conflicting), redundant: uniq(redundant), sys };
 }
 
@@ -1055,7 +1060,6 @@ export function solveSketch(sketch: Sketch, opts: SolveOptions = {}): SolveResul
     const params = compParams.get(root)!;
     params.forEach((p, k) => (colOf[p] = k));
     let sys = new SubSystem(ceqs, params, colOf, "rcm", weight);
-    // quick exit: already satisfied (still need the rank for DOF)
     let out = solveRobust(sys, x, tol, maxIt);
     if (out.status === "overconstrained" || out.redundant.length) {
       if (analyze) {
@@ -1119,7 +1123,7 @@ export function solveSketch(sketch: Sketch, opts: SolveOptions = {}): SolveResul
     }
   }
   for (const e of out.entities) {
-    if (e.type !== "circle") continue;
+    if (e.type !== "circle" || !circleR.has(e.id)) continue;
     const r = x[circleR.get(e.id)!];
     if (isFinite(r)) e.radius = Math.abs(r);
   }
@@ -1153,7 +1157,7 @@ export function sketchDof(sketch: Sketch): number {
   return solveSketch(sketch, { analyzeConflicts: false }).dof;
 }
 
-/** Dimension constraints whose value differs from the current geometry (for driven display etc.). */
+/** Is a single constraint satisfied by the current geometry (within tol * sketch scale)? */
 export function isConstraintSatisfied(sketch: Sketch, c: Constraint, tol = 1e-7): boolean {
   const single: Sketch = { points: sketch.points, entities: sketch.entities, constraints: [c] };
   const B = buildSystem(single);

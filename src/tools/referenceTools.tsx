@@ -9,7 +9,7 @@ import {
   axisOf, intersectLinePlane, intersectPlanes, intersectThreePlanes, lineFrom2Points, midPlane, offsetPlane,
   planeFrom3Points, planePerpendicularToLine, planeThroughLineAndPoint,
 } from "../fit/reference";
-import { Tool, type ToolPointerEvent } from "./Tool";
+import { Tool, type ToolClass, type ToolPointerEvent } from "./Tool";
 import { Overlay } from "./overlay";
 import { Section, Field, Select, NumberInput, Segmented, Stats, Slider, mm } from "../ui/widgets";
 import { fatSegments, lineMaterial, pointSprites, translucentMaterial } from "../viewer/draw";
@@ -592,7 +592,7 @@ class SymmetryTool extends Tool<SymState> {
 }
 
 export function startReferenceTool(app: App, id: string): void {
-  const map: Record<string, new (app: App) => Tool<object>> = {
+  const map: Record<string, ToolClass> = {
     refLine: RefLineTool,
     refPoint: RefPointTool,
     refPlane: RefPlaneTool,

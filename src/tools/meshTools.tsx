@@ -4,7 +4,7 @@ import type { App } from "../app/App";
 import type { MeshData, PlaneDef } from "../core/types";
 import { compute } from "../app/compute";
 import { markPrepared } from "../app/MeshRuntime";
-import { Tool } from "./Tool";
+import { Tool, type ToolClass } from "./Tool";
 import { Overlay } from "./overlay";
 import { Section, Field, NumberInput, Slider, Check, Stats, Select, Segmented, int, mm } from "../ui/widgets";
 import { fatSegments, lineMaterial, polylinesToPairs, translucentMaterial } from "../viewer/draw";
@@ -408,7 +408,7 @@ class ClipTool extends MeshTool<{ source: string; offset: number; flip: boolean;
 }
 
 export function startMeshTool(app: App, id: string): void {
-  const map: Record<string, new (app: App) => Tool<object>> = {
+  const map: Record<string, ToolClass> = {
     reduce: ReduceTool,
     smooth: SmoothTool,
     fillHoles: FillHolesTool,

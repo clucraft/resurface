@@ -563,8 +563,8 @@ const AXES: Record<WorldAxis, Vec3> = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1]
  * world axis, and `origin` onto (0,0,0).
  *
  * Without a secondary entity the rotation is the minimal one taking the primary direction to its
- * target. Without an explicit origin: when the primary is a plane and the secondary an axis with a
- * point, the axis/plane intersection is used; otherwise primary.point.
+ * target. Without an explicit origin: when one entity is a plane and the other an axis (and the
+ * secondary has a point), the axis/plane intersection is used; otherwise primary.point.
  */
 export function alignToWorld(spec: AlignToWorldSpec): Mat4 {
   let P = normalize(spec.primary.direction);
@@ -608,13 +608,18 @@ export function alignToWorld(spec: AlignToWorldSpec): Mat4 {
   if (!o) {
     o = spec.primary.point;
     const sec = spec.secondary;
+    // line ∩ plane helper: line (lp, ld), plane (pp, pn)
+    const hit = (lp: Vec3, ld: Vec3, pp: Vec3, pn: Vec3): Vec3 | null => {
+      const d = normalize(ld), n = normalize(pn);
+      const den = dot(d, n);
+      if (Math.abs(den) < 1e-9) return null;
+      const t = dot([pp[0] - lp[0], pp[1] - lp[1], pp[2] - lp[2]], n) / den;
+      return [lp[0] + t * d[0], lp[1] + t * d[1], lp[2] + t * d[2]];
+    };
     if (spec.primary.kind === "plane" && sec && sec.kind === "axis" && sec.point) {
-      const d = normalize(sec.direction);
-      const den = dot(d, P);
-      if (Math.abs(den) > 1e-9) {
-        const t = dot([spec.primary.point[0] - sec.point[0], spec.primary.point[1] - sec.point[1], spec.primary.point[2] - sec.point[2]], P) / den;
-        o = [sec.point[0] + t * d[0], sec.point[1] + t * d[1], sec.point[2] + t * d[2]];
-      }
+      o = hit(sec.point, sec.direction, spec.primary.point, spec.primary.direction) ?? o;
+    } else if (spec.primary.kind === "axis" && sec && sec.kind === "plane" && sec.point) {
+      o = hit(spec.primary.point, spec.primary.direction, sec.point, sec.direction) ?? o;
     }
   }
   const t: Vec3 = [

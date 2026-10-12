@@ -120,6 +120,65 @@ export function distanceKernel(def: PrimitiveDef): DistanceKernel {
   }
 }
 
+/** Non-allocating outward-normal kernel: writes the unit normal at the foot point of (x,y,z) into out[0..3). */
+export type NormalKernel = (x: number, y: number, z: number, out: Float64Array) => void;
+
+export function normalKernel(def: PrimitiveDef): NormalKernel {
+  switch (def.kind) {
+    case "plane": {
+      const [nx, ny, nz] = normalize(def.normal);
+      return (_x, _y, _z, out) => {
+        out[0] = nx;
+        out[1] = ny;
+        out[2] = nz;
+      };
+    }
+    case "sphere": {
+      const [cx, cy, cz] = def.center;
+      return (x, y, z, out) => {
+        const dx = x - cx, dy = y - cy, dz = z - cz;
+        const l = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (l > 1e-300) {
+          out[0] = dx / l;
+          out[1] = dy / l;
+          out[2] = dz / l;
+        } else {
+          out[0] = 1;
+          out[1] = 0;
+          out[2] = 0;
+        }
+      };
+    }
+    case "cylinder":
+    case "cone": {
+      const o = def.kind === "cylinder" ? def.origin : def.apex;
+      const [ox, oy, oz] = o;
+      const [ax, ay, az] = normalize(def.axis);
+      const ca = def.kind === "cone" ? Math.cos(def.halfAngle) : 1;
+      const sa = def.kind === "cone" ? Math.sin(def.halfAngle) : 0;
+      const [px, py, pz] = perpBasis([ax, ay, az])[0];
+      return (x, y, z, out) => {
+        const dx = x - ox, dy = y - oy, dz = z - oz;
+        const h = dx * ax + dy * ay + dz * az;
+        let wx = dx - h * ax, wy = dy - h * ay, wz = dz - h * az;
+        const l = Math.sqrt(wx * wx + wy * wy + wz * wz);
+        if (l > 1e-300) {
+          wx /= l;
+          wy /= l;
+          wz /= l;
+        } else {
+          wx = px;
+          wy = py;
+          wz = pz;
+        }
+        out[0] = ca * wx - sa * ax;
+        out[1] = ca * wy - sa * ay;
+        out[2] = ca * wz - sa * az;
+      };
+    }
+  }
+}
+
 /** Signed distance from p to the primitive (positive outside / on the normal side of a plane). */
 export function distanceToPrimitive(def: PrimitiveDef, p: Vec3): number {
   return distanceKernel(def)(p[0], p[1], p[2]);
@@ -474,6 +533,84 @@ export function fitPlaneWithNormal(pos: PointArray, normal: Vec3, opts: FitOptio
   const centroid = selectionCentroid(pos, opts.indices);
   const d = dot([centroid[0] - onPlane[0], centroid[1] - onPlane[1], centroid[2] - onPlane[2]], n);
   const def: PlaneDef = { kind: "plane", origin: [centroid[0] - d * n[0], centroid[1] - d * n[1], centroid[2] - d * n[2]], normal: n };
+  return { def, ...finishStats(def, pos, opts.indices, sigma * S.scale) };
+}
+
+/**
+ * Plane whose normal is perpendicular to `direction` — i.e. the plane is parallel to / contains
+ * that direction (perpendicular to a reference plane with normal `direction`, or parallel to a
+ * reference axis). With `throughPoint` the plane also passes through that point (direction +
+ * point = a plane through a reference line).
+ */
+export function fitPlanePerpendicular(
+  pos: PointArray,
+  direction: Vec3,
+  opts: FitOptions & { throughPoint?: Vec3 } = {},
+): FitResult<PlaneDef> {
+  const dir = normalize(direction);
+  if (length(dir) === 0) throw new Error("fitPlanePerpendicular: zero direction");
+  const S = buildSample(pos, opts, 2, "fitPlanePerpendicular");
+  const [e1, e2] = perpBasis(dir);
+  const fixedC = opts.throughPoint ? toNorm(opts.throughPoint, S) : null;
+  const solve = (w?: Float64Array): { n: Vec3; c: Vec3; spread: number } => {
+    let c: Vec3;
+    if (fixedC) c = fixedC;
+    else {
+      let sw = 0, cx = 0, cy = 0, cz = 0;
+      for (let i = 0; i < S.m; i++) {
+        const wi = w ? w[i] : 1;
+        sw += wi;
+        cx += wi * S.xs[3 * i];
+        cy += wi * S.xs[3 * i + 1];
+        cz += wi * S.xs[3 * i + 2];
+      }
+      if (!(sw > 0)) throw new Error("fitPlanePerpendicular: all points rejected as outliers");
+      c = [cx / sw, cy / sw, cz / sw];
+    }
+    let a = 0, b = 0, d = 0;
+    for (let i = 0; i < S.m; i++) {
+      const wi = w ? w[i] : 1;
+      const x = S.xs[3 * i] - c[0], y = S.xs[3 * i + 1] - c[1], z = S.xs[3 * i + 2] - c[2];
+      const u = x * e1[0] + y * e1[1] + z * e1[2], v = x * e2[0] + y * e2[1] + z * e2[2];
+      a += wi * u * u;
+      b += wi * u * v;
+      d += wi * v * v;
+    }
+    // smallest eigenvector of [[a, b], [b, d]]
+    const th = 0.5 * Math.atan2(2 * b, a - d) + Math.PI / 2;
+    const cu = Math.cos(th), su = Math.sin(th);
+    const n = normalize([cu * e1[0] + su * e2[0], cu * e1[1] + su * e2[1], cu * e1[2] + su * e2[2]]);
+    return { n, c, spread: (a + d) / Math.max(1e-300, w ? w.reduce((s, v) => s + v, 0) : S.m) };
+  };
+  let { n, c, spread } = solve();
+  // all points on one line parallel to `direction` (through the point): the plane is undefined
+  if (!(spread > 1e-20)) throw new Error("fitPlanePerpendicular: points lie on a line parallel to the direction — plane undefined");
+  let sigma = NaN;
+  if (opts.robust) {
+    const r = new Float64Array(S.m), w = new Float64Array(S.m);
+    for (let round = 0; round < (opts.maxIterations ?? 30); round++) {
+      for (let i = 0; i < S.m; i++) r[i] = (S.xs[3 * i] - c[0]) * n[0] + (S.xs[3 * i + 1] - c[1]) * n[1] + (S.xs[3 * i + 2] - c[2]) * n[2];
+      sigma = tukeyWeights(r, S.m, w, 1e-9);
+      const prev = n;
+      ({ n, c } = solve(w));
+      if (1 - Math.abs(dot(prev, n)) < 1e-15) break;
+    }
+    for (let i = 0; i < S.m; i++) r[i] = (S.xs[3 * i] - c[0]) * n[0] + (S.xs[3 * i + 1] - c[1]) * n[1] + (S.xs[3 * i + 2] - c[2]) * n[2];
+    sigma = tukeyWeights(r, S.m, w, 1e-9);
+  }
+  let normal: Vec3 = n;
+  if (S.ns) {
+    if (dot(meanNormal(S.ns, S.m), normal) < 0) normal = [-normal[0], -normal[1], -normal[2]];
+  } else normal = canonicalSign(normal);
+  const onPlane = toWorld(c, S);
+  let origin: Vec3;
+  if (opts.throughPoint) origin = [opts.throughPoint[0], opts.throughPoint[1], opts.throughPoint[2]];
+  else {
+    const centroid = selectionCentroid(pos, opts.indices);
+    const dd = dot([centroid[0] - onPlane[0], centroid[1] - onPlane[1], centroid[2] - onPlane[2]], normal);
+    origin = [centroid[0] - dd * normal[0], centroid[1] - dd * normal[1], centroid[2] - dd * normal[2]];
+  }
+  const def: PlaneDef = { kind: "plane", origin, normal };
   return { def, ...finishStats(def, pos, opts.indices, sigma * S.scale) };
 }
 
@@ -1227,7 +1364,7 @@ export function detectBestPrimitive(pos: PointArray, opts: DetectOptions = {}): 
 // ===========================================================================
 
 export interface RansacOptions {
-  /** inlier distance threshold in model units (default 0.5 % of the sample's RMS radius × 2) */
+  /** inlier distance threshold in model units (default 1 % of the selection's RMS radius about its centroid) */
   threshold?: number;
   /** max angle between point normal and primitive normal for inliers (default 25°; ignored without normals) */
   normalThresholdDeg?: number;
@@ -1338,6 +1475,8 @@ function hypothesis(kind: PrimitiveKind, E: PointSample, rng: () => number, hasN
 /** MSAC cost and inlier count of a model on the evaluation sample. */
 function scoreModel(def: PrimitiveDef, E: PointSample, T: number, cosThr: number, useNormals: boolean): { cost: number; inliers: number } {
   const f = distanceKernel(def);
+  const nk = normalKernel(def);
+  const n = new Float64Array(3);
   const T2 = T * T;
   let cost = 0, inl = 0;
   for (let i = 0; i < E.m; i++) {
@@ -1345,7 +1484,7 @@ function scoreModel(def: PrimitiveDef, E: PointSample, T: number, cosThr: number
     const r = f(x, y, z);
     let r2 = r * r;
     if (r2 < T2 && useNormals && E.ns) {
-      const n = primitiveNormalAt(def, [x, y, z]);
+      nk(x, y, z, n);
       if (Math.abs(n[0] * E.ns[3 * i] + n[1] * E.ns[3 * i + 1] + n[2] * E.ns[3 * i + 2]) < cosThr) r2 = T2;
     }
     if (r2 < T2) inl++;
@@ -1354,7 +1493,10 @@ function scoreModel(def: PrimitiveDef, E: PointSample, T: number, cosThr: number
   return { cost, inliers: inl };
 }
 
-/** Inlier mask over the whole selection (distance + optional normal compatibility). */
+/**
+ * Inlier mask over the whole selection (distance + optional normal compatibility), plus the
+ * vertex ids of a deterministic stride sub-sample of the inliers (≤ maxIds) for the refit.
+ */
 function classifyAll(
   def: PrimitiveDef,
   pos: PointArray,
@@ -1362,8 +1504,11 @@ function classifyAll(
   indices: ArrayLike<number> | undefined,
   T: number,
   cosThr: number,
-): { mask: Uint8Array; ids: Uint32Array } {
+  maxIds: number,
+): { mask: Uint8Array; count: number; ids: Uint32Array } {
   const f = distanceKernel(def);
+  const nk = normalKernel(def);
+  const pn = new Float64Array(3);
   const count = selectionCount(pos, indices);
   const mask = new Uint8Array(count);
   let n = 0;
@@ -1374,19 +1519,31 @@ function classifyAll(
     if (!(Math.abs(r) <= T)) continue;
     if (normals) {
       const nx = normals[3 * i], ny = normals[3 * i + 1], nz = normals[3 * i + 2];
-      const l = Math.hypot(nx, ny, nz);
+      const l = Math.sqrt(nx * nx + ny * ny + nz * nz);
       if (l > 0) {
-        const pn = primitiveNormalAt(def, [x, y, z]);
+        nk(x, y, z, pn);
         if (Math.abs(pn[0] * nx + pn[1] * ny + pn[2] * nz) / l < cosThr) continue;
       }
     }
     mask[k] = 1;
     n++;
   }
-  const ids = new Uint32Array(n);
-  let t = 0;
-  for (let k = 0; k < count; k++) if (mask[k]) ids[t++] = indices ? indices[k] : k;
-  return { mask, ids };
+  // stride sub-sample of the inliers: take inlier number floor(j * n / m) for j = 0..m-1
+  const m = Math.min(n, Math.max(1, maxIds));
+  const ids = new Uint32Array(m);
+  let seen = 0, t = 0;
+  for (let k = 0; k < count && t < m; k++) {
+    if (!mask[k]) continue;
+    if (Math.floor((t * n) / m) === seen) ids[t++] = indices ? indices[k] : k;
+    seen++;
+  }
+  return { mask, count: n, ids: t === m ? ids : ids.slice(0, t) };
+}
+
+function sameMask(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 /**
@@ -1435,22 +1592,22 @@ export function ransacPrimitive(
   if (!best) throw new Error(`ransacPrimitive: no valid ${kind} hypothesis found (data degenerate or normals missing)`);
   let def: PrimitiveDef = defToWorld(best, S);
   const Tw = T * S.scale;
-  let result: FitResult<PrimitiveDef> | null = null;
-  let cls = classifyAll(def, pos, normals, opts.indices, Tw, cosThr);
+  const maxIds = opts.maxPoints ?? DEFAULT_MAX_POINTS;
+  let cls = classifyAll(def, pos, normals, opts.indices, Tw, cosThr, maxIds);
   for (let round = 0; round < 3; round++) {
-    if (cls.ids.length < minPts) break;
+    if (cls.count < minPts) break;
     try {
-      result = fitPrimitive(kind, pos, { indices: cls.ids, normals, initial: def, maxPoints: opts.maxPoints, seed: opts.seed });
+      // the refit sees a sub-sample of the inliers; final stats/extents below use the full mask
+      def = fitPrimitive(kind, pos, { indices: cls.ids, normals, initial: def, maxPoints: maxIds, seed: opts.seed }).def;
     } catch {
       break;
     }
-    def = result.def;
-    const next = classifyAll(def, pos, normals, opts.indices, Tw, cosThr);
-    const same = next.ids.length === cls.ids.length && next.ids.every((v, i) => v === cls.ids[i]);
+    const next = classifyAll(def, pos, normals, opts.indices, Tw, cosThr, maxIds);
+    const same = sameMask(next.mask, cls.mask);
     cls = next;
     if (same) break;
   }
-  if (cls.ids.length < minPts) throw new Error(`ransacPrimitive: too few inliers (${cls.ids.length}) for a ${kind}`);
+  if (cls.count < minPts) throw new Error(`ransacPrimitive: too few inliers (${cls.count}) for a ${kind}`);
   // final extents / stats over the final inliers
   if (def.kind === "cylinder") {
     const [lo, hi] = axialRange(pos, opts.indices, def.origin, def.axis, cls.mask);

@@ -31,8 +31,8 @@ export class SketchView implements EntityView {
       enabled: () => this.group.visible && !this.editing,
       raycast: (ray, ctx) => {
         rc.ray.copy(ray);
+        rc.camera = ctx.camera;
         (rc.params as { Line2?: { threshold: number } }).Line2 = { threshold: 6 };
-        void ctx;
         const hits = rc.intersectObjects(this.group.children.filter((c) => !c.userData.noPick), false);
         if (!hits.length) return null;
         const h = hits[0];

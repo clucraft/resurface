@@ -10,11 +10,13 @@ import {
   fitCylinderWithAxis,
   fitCylinderWithRadius,
   fitPlane,
+  fitPlanePerpendicular,
   fitPlaneWithNormal,
   fitPrimitive,
   fitSphere,
   fitSphereWithRadius,
   fitStats,
+  normalKernel,
   primitiveNormalAt,
   projectToPrimitive,
   ransacPrimitive,
@@ -73,6 +75,19 @@ describe("fitPlane", () => {
     const p = new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
     expect(() => fitPlane(p)).toThrow(/collinear/);
     expect(() => fitPlane(new Float32Array([0, 0, 0, 1, 1, 1]))).toThrow(/at least 3/);
+  });
+
+  it("fitPlanePerpendicular: normal ⟂ direction, optionally through a line", () => {
+    const n0 = normalize([1, 0.02, 0.3] as Vec3);
+    const c = planePatch({ origin: [2, 0, 0], normal: n0, size: 10, n: 2000, noise: 0.01, seed: 6 });
+    const r = fitPlanePerpendicular(c.positions, [0, 0, 1]);
+    expect(Math.abs(r.def.normal[2])).toBeLessThan(1e-12);
+    expect(axisAngleDeg(r.def.normal, [n0[0], n0[1], 0])).toBeLessThan(1);
+    const through = fitPlanePerpendicular(c.positions, [0, 0, 1], { throughPoint: [2, 0, 0], robust: true });
+    expect(Math.abs(distanceToPrimitive(through.def, [2, 0, 0]))).toBeLessThan(1e-12);
+    expect(Math.abs(through.def.normal[2])).toBeLessThan(1e-12);
+    const line = new Float32Array([0, 0, 0, 0, 0, 1, 0, 0, 2]);
+    expect(() => fitPlanePerpendicular(line, [0, 0, 1])).toThrow(/line parallel/);
   });
 
   it("fitPlaneWithNormal keeps the normal", () => {
@@ -282,6 +297,10 @@ describe("residuals / projection / stats", () => {
         expect(Math.abs(Math.abs(distanceToPrimitive(d, p)) - dist)).toBeLessThan(1e-9);
         // moving along the outward normal increases the signed distance
         const n = primitiveNormalAt(d, q);
+        const nk = new Float64Array(3);
+        normalKernel(d)(p[0], p[1], p[2], nk);
+        const n2 = primitiveNormalAt(d, p);
+        for (let c = 0; c < 3; c++) expect(nk[c]).toBeCloseTo(n2[c], 12);
         expect(distanceToPrimitive(d, [q[0] + 0.01 * n[0], q[1] + 0.01 * n[1], q[2] + 0.01 * n[2]])).toBeCloseTo(0.01, 6);
       }
     expect(distanceToPrimitive(prims[1], [1, 2, 3])).toBeCloseTo(-4, 12);

@@ -96,9 +96,13 @@ export function kasaCircle(xy: ArrayLike<number>, n: number, subset?: ArrayLike<
   const sc = Math.sqrt(s2 / m);
   if (!(sc > 1e-300)) return null;
   const A = new Float64Array(9), b = new Float64Array(3);
+  let cxx = 0, cxy = 0, cyy = 0;
   for (let t = 0; t < m; t++) {
     const i = subset ? subset[t] : t;
     const x = (xy[2 * i] - mx) / sc, y = (xy[2 * i + 1] - my) / sc;
+    cxx += x * x;
+    cxy += x * y;
+    cyy += y * y;
     const z = -(x * x + y * y);
     A[0] += x * x;
     A[1] += x * y;
@@ -110,6 +114,10 @@ export function kasaCircle(xy: ArrayLike<number>, n: number, subset?: ArrayLike<
     b[1] += y * z;
     b[2] += z;
   }
+  // (near-)collinear points: the smaller eigenvalue of the normalised 2D scatter vanishes
+  const tr = (cxx + cyy) / m, det = (cxx * cyy - cxy * cxy) / (m * m);
+  const lmin = tr / 2 - Math.sqrt(Math.max(0, (tr * tr) / 4 - det));
+  if (!(lmin > 1e-12 * tr)) return null;
   A[3] = A[1];
   A[6] = A[2];
   A[7] = A[5];

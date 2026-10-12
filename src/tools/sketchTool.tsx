@@ -68,7 +68,50 @@ export function computeSection(app: App, meshId: string, frame: Frame): SectionP
   if (!mesh) return [];
   const plane: PlaneDef = { kind: "plane", origin: frame.origin, normal: frame.zAxis };
   const pls = sectionMesh(mesh, plane, { candidates: sectionCandidates(app, meshId, plane) });
-  return pls.map((pl) => ({ points: pl.points.map((p) => worldToFrame(frame, p)), closed: pl.closed }));
+  return joinChains(pls.map((pl) => ({ points: pl.points.map((p) => worldToFrame(frame, p)), closed: pl.closed })));
+}
+
+/**
+ * Scan meshes often have small defects (non-manifold spots, tiny gaps) that split a section
+ * into several open chains. Join chains whose ends nearly touch and close chains whose two
+ * ends meet.
+ */
+function joinChains(polys: SectionPolyline[]): SectionPolyline[] {
+  const open = polys.filter((p) => !p.closed && p.points.length >= 2).map((p) => ({ points: p.points.slice(), closed: false }));
+  const closed = polys.filter((p) => p.closed);
+  // gap tolerance from the typical point spacing
+  const gaps: number[] = [];
+  for (const p of polys) for (let i = 1; i < p.points.length; i += Math.max(1, Math.floor(p.points.length / 50))) gaps.push(dist2(p.points[i], p.points[i - 1]));
+  gaps.sort((a, b) => a - b);
+  const tol = Math.max(1e-6, (gaps[Math.floor(gaps.length / 2)] ?? 0) * 4);
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < open.length && !merged; i++) {
+      const a = open[i];
+      for (let j = i + 1; j < open.length && !merged; j++) {
+        const b = open[j];
+        const aS = a.points[0], aE = a.points[a.points.length - 1], bS = b.points[0], bE = b.points[b.points.length - 1];
+        let pts: Vec2[] | null = null;
+        if (dist2(aE, bS) < tol) pts = [...a.points, ...b.points];
+        else if (dist2(aE, bE) < tol) pts = [...a.points, ...b.points.slice().reverse()];
+        else if (dist2(aS, bE) < tol) pts = [...b.points, ...a.points];
+        else if (dist2(aS, bS) < tol) pts = [...b.points.slice().reverse(), ...a.points];
+        if (pts) {
+          open[i] = { points: pts, closed: false };
+          open.splice(j, 1);
+          merged = true;
+        }
+      }
+    }
+  }
+  for (const p of open) {
+    if (p.points.length > 3 && dist2(p.points[0], p.points[p.points.length - 1]) < tol) {
+      p.points.pop();
+      p.closed = true;
+    }
+  }
+  return [...closed, ...open];
 }
 
 function sectionsTo3D(frame: Frame, secs: SectionPolyline[]) {
@@ -650,13 +693,19 @@ class SketchEditTool extends Tool<SketchEditState> {
       case "trim": {
         const hit = findNearest(this.sketch, p, this.pxSize(p) * 8, { entitiesOnly: true });
         if (!hit) return true;
-        void lazy<typeof import("../sketch/ops")>("../sketch/ops.ts").then((ops) => this.edit("Trim", (s) => ops.trimAt(s, hit.id, p) as unknown as void));
+        void lazy<typeof import("../sketch/ops")>("../sketch/ops.ts").then((ops) => this.edit("Trim", (s) => {
+          const r = ops.trimAt(s, hit.id, p);
+          if (!r.ok) throw new Error(r.message ?? "Nothing to trim here");
+        }));
         return true;
       }
       case "fillet": {
         const hit = findNearest(this.sketch, p, this.pxSize(p) * 10, { pointsOnly: true });
         if (!hit) return true;
-        void lazy<typeof import("../sketch/ops")>("../sketch/ops.ts").then((ops) => this.edit("Fillet", (s) => ops.filletCorner(s, hit.id, this.s.filletRadius) as unknown as void));
+        void lazy<typeof import("../sketch/ops")>("../sketch/ops.ts").then((ops) => this.edit("Fillet", (s) => {
+          const r = ops.filletCorner(s, hit.id, this.s.filletRadius);
+          if (!r.ok) throw new Error(r.message ?? "Fillet failed");
+        }));
         return true;
       }
       case "dimension": {
@@ -788,9 +837,14 @@ class SketchEditTool extends Tool<SketchEditState> {
     if (type && !validateConstraint(s, { type, refs: [lineId] })) addConstraint(s, { type, refs: [lineId] });
   }
 
-  /** Merge a newly created endpoint with an existing point at the same location. */
-  private pointAt(s: Sketch, p: Vec2): string {
-    const near = findNearest(s, p, this.pxSize(p) * 6, { pointsOnly: true });
+  /**
+   * Merge a newly created endpoint with an existing point at the same location. Only points in
+   * `pool` (those that existed before the current operation) are candidates, and the radius is
+   * capped by the fit tolerance so small features (tiny fillets) never collapse.
+   */
+  private pointAt(s: Sketch, p: Vec2, pool?: Set<string>): string {
+    const tol = Math.min(this.pxSize(p) * 6, Math.max(this.s.autoTol * 2, 1e-3));
+    const near = findNearest(s, p, tol, { pointsOnly: true, filter: pool ? (id) => pool.has(id) : undefined });
     return near ? near.id : addPoint(s, p);
   }
 
@@ -826,6 +880,7 @@ class SketchEditTool extends Tool<SketchEditState> {
       this.app.setStatus(`Line fitted: RMS ${r.stats.rms.toFixed(4)} mm over ${pts.length} points`);
     } else if (mode === "fitCircle") {
       const r = fit.fitCircle2D(pts);
+      if (!r) return void this.app.toast("error", "Circle fit failed");
       this.edit("Fit circle", (s) => {
         addCircle(s, addPoint(s, r.center), r.radius, { construction: this.s.construction });
       });
@@ -833,6 +888,7 @@ class SketchEditTool extends Tool<SketchEditState> {
     } else if (mode === "fitArc") {
       const chain = chains.sort((x, y) => y.points.length - x.points.length)[0].points;
       const r = fit.fitArc2D(chain);
+      if (!r) return void this.app.toast("error", "Arc fit failed");
       this.edit("Fit arc", (s) => {
         const id = addArc3(s, this.pointAt(s, r.start), r.mid, this.pointAt(s, r.end), { construction: this.s.construction });
         if (!id) throw new Error("Arc fit failed (points are collinear)");
@@ -842,9 +898,10 @@ class SketchEditTool extends Tool<SketchEditState> {
       const tol = this.s.autoTol;
       let created = 0;
       this.edit("Auto fit", (s) => {
+        const pool = new Set(s.points.map((q) => q.id));
         for (const c of chains) {
-          const sub = fit.autoSketch(c.points, { tolerance: tol, closed: c.closed, constrainHV: this.s.autoHV });
-          created += mergeSketch(s, sub, (p) => this.pointAt(s, p));
+          const sub = fit.autoSketch(c.points, { tolerance: tol, closed: c.closed, horizontalVertical: this.s.autoHV });
+          created += mergeSketch(s, sub, (p) => this.pointAt(s, p, pool));
         }
       });
       this.app.setStatus(`Auto fit created ${created} entities (tolerance ${tol} mm)`);

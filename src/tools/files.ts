@@ -31,8 +31,10 @@ export function pickFiles(accept: string, multiple = true): Promise<File[]> {
 }
 
 /** Save data to disk. Uses the File System Access API when available, else a download. */
-export async function saveFile(data: BlobPart, suggestedName: string, mime = "application/octet-stream"): Promise<boolean> {
-  const blob = data instanceof Blob ? data : new Blob([data], { type: mime });
+export async function saveFile(data: BlobPart | Uint8Array<ArrayBufferLike>, suggestedName: string, mime = "application/octet-stream"): Promise<boolean> {
+  // Blobs cannot be built from SharedArrayBuffer views: copy those first
+  const part = data instanceof Uint8Array && !(data.buffer instanceof ArrayBuffer) ? new Uint8Array(data) : data;
+  const blob = part instanceof Blob ? part : new Blob([part as BlobPart], { type: mime });
   const w = window as unknown as {
     showSaveFilePicker?: (o: unknown) => Promise<{ createWritable: () => Promise<{ write: (b: Blob) => Promise<void>; close: () => Promise<void> }> }>;
   };

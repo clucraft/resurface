@@ -7,7 +7,7 @@ import * as THREE from "three";
 import type { App } from "./App";
 import type { ToolPointerEvent } from "../tools/Tool";
 import type { MeshRuntime } from "./MeshRuntime";
-import { smartSelect } from "../mesh/select";
+import { smartRegion } from "./regionGrow";
 
 type Mode = "add" | "remove" | "replace";
 
@@ -80,9 +80,9 @@ export class SelectionController {
         const rt = this.runtime(e);
         const hit = e.pick((id) => id === rt?.entityId);
         if (!rt || !hit || hit.faceIndex === undefined) return true;
-        const res = smartSelect(rt.mesh, hit.faceIndex, { angleTolDeg: this.app.ui.get().smartAngle });
-        const tris = toTriangleList(res);
-        rt.applyTriangles(tris, modeFor(e, "replace"));
+        const res = smartRegion(rt.mesh, rt.neighbors, hit.faceIndex, this.app.ui.get().smartAngle);
+        rt.applyTriangles(toTriangleList(res.mask), modeFor(e, "replace"));
+        this.app.setStatus(`Smart select: ${res.kind === "freeform" ? "smooth freeform" : res.kind} region, ${res.count.toLocaleString()} triangles`);
         return true;
       }
     }

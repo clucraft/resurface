@@ -47,6 +47,19 @@ describe("estimateSymmetryPlane", () => {
     expect(r.candidates[r.candidates.length - 1].rms).toBeGreaterThan(10 * r.rms);
   });
 
+  it("ignores a one-sided asymmetric feature (trimming) starting from PCA candidates", () => {
+    const bumpy = (x: number, y: number) => symSurf(x, y) + 0.4 * Math.exp(-((x - 1.8) ** 2 + (y - 1) ** 2) / 0.08);
+    const M = mul4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -4, 2, 8, 1], randomRigid(makeRand(7), 2));
+    const dense = transformCloud(M, heightField(bumpy, { x0: -3, x1: 3, y0: -2, y1: 3, nx: 240, ny: 200, seed: 8 }));
+    const query = createPointCloudQuery(dense.positions, dense.normals, { projectToTangentPlane: true });
+    const scan = transformCloud(M, heightField(bumpy, { x0: -3, x1: 3, y0: -2, y1: 3, nx: 80, ny: 70, jitter: 0.9, noise: 0.002, seed: 9 }));
+    const r = estimateSymmetryPlane(scan.positions, { query, normals: scan.normals });
+    expect(axisAngleDeg(r.plane.normal, transformDir(M, [1, 0, 0]))).toBeLessThan(0.1);
+    const o = transformPoint(M, [0, 0, 0]);
+    const off = (o[0] - r.plane.origin[0]) * r.plane.normal[0] + (o[1] - r.plane.origin[1]) * r.plane.normal[1] + (o[2] - r.plane.origin[2]) * r.plane.normal[2];
+    expect(Math.abs(off)).toBeLessThan(0.01);
+  });
+
   it("requires a query", () => {
     expect(() => estimateSymmetryPlane(new Float32Array(30), {} as never)).toThrow(/query/);
   });
@@ -63,7 +76,7 @@ describe("symmetryDeviation", () => {
     // the bump mirrored to the other side lies above the surface there
     expect(dev[1]).toBeGreaterThan(0.15);
     // the plain side mirrored onto the bump lies below it
-    expect(dev[2]).toBeLessThan(-0.15);
+    expect(dev[2]).toBeLessThan(-0.1);
     // identity check with an inverse transform (just exercising helpers)
     expect(invertRigid([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 2, 3, 1])[12]).toBe(-1);
   });

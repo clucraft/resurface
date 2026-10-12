@@ -40,12 +40,20 @@ export function Viewport() {
     const canvas = viewer.domElement;
     const down = (e: PointerEvent) => {
       canvas.focus();
-      if (e.button === 0) canvas.setPointerCapture(e.pointerId);
+      try {
+        if (e.button === 0) canvas.setPointerCapture(e.pointerId);
+      } catch {
+        /* synthetic events have no active pointer */
+      }
       app.handlePointer("down", e);
     };
     const move = (e: PointerEvent) => app.handlePointer("move", e);
     const up = (e: PointerEvent) => {
-      if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+      try {
+        if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
       app.handlePointer("up", e);
     };
     const leave = () => app.selection.updateBrushCursor(0, 0, false);

@@ -11,6 +11,8 @@ export interface DefeatureOptions {
   smooth?: boolean;
   /** insert interior vertices matching the surrounding density (default true) */
   refine?: boolean;
+  /** quadric base surface for the fill (see FillHolesOptions.quadricBase), default true */
+  quadricBase?: boolean;
   onProgress?: ProgressFn;
 }
 
@@ -48,7 +50,12 @@ export function defeature(mesh: MeshData, triMask: Uint8Array, opts: DefeatureOp
     if (all) chosen.push(L);
     else if (any) skipped++;
   }
-  const res = fillBoundaryLoops(cut, chosen, { smooth: opts.smooth ?? true, refine: opts.refine ?? true, onProgress: opts.onProgress });
+  const res = fillBoundaryLoops(cut, chosen, {
+    smooth: opts.smooth ?? true,
+    refine: opts.refine ?? true,
+    quadricBase: opts.quadricBase ?? true,
+    onProgress: opts.onProgress,
+  });
   res.stats.holesFound = loops.length;
   res.stats.skipped += skipped;
   return res;

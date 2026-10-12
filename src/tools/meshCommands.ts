@@ -2,6 +2,7 @@
 import type { App } from "../app/App";
 import type { MeshData } from "../core/types";
 import { compute } from "../app/compute";
+import { markPrepared } from "../app/MeshRuntime";
 import { deleteTriangles, flipNormals } from "../mesh/repair";
 import { growSelection, invertSelection, selectConnected, shrinkSelection } from "../mesh/select";
 
@@ -39,9 +40,9 @@ export async function runMeshCommand(app: App, id: string): Promise<void> {
       if (!rt.selectionCount) throw new Error("Select the feature to remove first");
       const mask = rt.selection.slice();
       await app.busy("Removing feature", async () => {
-        const res = await compute.run<MeshData | { mesh: MeshData }>("defeature", { mesh: rt.mesh, mask });
-        const mesh = "mesh" in res && !(res as MeshData).positions ? (res as { mesh: MeshData }).mesh : (res as MeshData);
-        app.replaceMesh(e.id, mesh, "De-feature");
+        const mesh = await compute.run<MeshData>("defeature", { mesh: rt.mesh, mask, prepare: "reorder" });
+        markPrepared(mesh);
+        app.replaceMesh(e.id, mesh, "De-feature", true);
       });
       app.toast("success", "Feature removed and filled");
       return;

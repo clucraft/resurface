@@ -48,13 +48,75 @@ const jobs: Record<string, Job> = {
     const c = connectedComponents(mesh, progress);
     return { count: c.count, sizes: c.componentSizes };
   },
+  /** Signed distances from points[start..end) to a target triangle mesh (NaN beyond maxDistance). */
+  async deviation({ points, start, end, target, maxDistance }: { points: Float32Array; start: number; end: number; target: MeshData; maxDistance: number }, progress) {
+    const { MeshSpatialIndex } = await import("../mesh/spatial");
+    const index = new MeshSpatialIndex(target);
+    const n = end - start;
+    const out = new Float32Array(n);
+    const p: [number, number, number] = [0, 0, 0];
+    for (let i = 0; i < n; i++) {
+      const v = start + i;
+      p[0] = points[3 * v];
+      p[1] = points[3 * v + 1];
+      p[2] = points[3 * v + 2];
+      const hit = index.closestPoint(p, maxDistance);
+      if (!hit) out[i] = NaN;
+      else {
+        const s = (p[0] - hit.point[0]) * hit.normal[0] + (p[1] - hit.point[1]) * hit.normal[1] + (p[2] - hit.point[2]) * hit.normal[2];
+        out[i] = s >= 0 ? hit.distance : -hit.distance;
+      }
+      if ((i & 16383) === 0) progress(i / n);
+    }
+    index.dispose();
+    return out;
+  },
+  async curvature({ mesh, kind }: { mesh: MeshData; kind: "mean" | "signedMean" | "rms" | "max" }) {
+    const { vertexCurvature, smoothVertexScalar } = await import("../mesh/curvature");
+    return smoothVertexScalar(mesh, vertexCurvature(mesh, { kind }), 1);
+  },
+  /**
+   * One-click autosurface (optionally restricted to a triangle mask): decimate to a coarse
+   * triangle mesh, build a quad cage, snap & fit it to the scan.
+   */
+  async autosurface(
+    { mesh, mask, coarseTriangles, opts }: { mesh: MeshData; mask?: Uint8Array; coarseTriangles: number; opts: Record<string, unknown> },
+    progress,
+  ) {
+    const { compactMesh } = await import("../mesh/topology");
+    const { decimate } = await import("../mesh/decimate");
+    const { MeshSpatialIndex } = await import("../mesh/spatial");
+    const { autosurface } = await import("../freeform/autosurface");
+    progress(0, "Preparing target");
+    let target = mask ? compactMesh(mesh, mask) : mesh;
+    if (target.indices.length / 3 > 400_000) target = decimate(target, { targetTriangles: 400_000 });
+    progress(0.05, "Building coarse layout");
+    const coarse = decimate(target, { targetTriangles: Math.max(8, coarseTriangles) });
+    const index = new MeshSpatialIndex(target);
+    const res = autosurface(coarse, index.asQuery(), { ...opts, onProgress: (f, m) => progress(0.1 + 0.9 * f, m) });
+    index.dispose();
+    return { cage: res.cage, patches: res.patches.length, rms: res.rms, maxDev: res.maxDev, quality: res.quality };
+  },
+  /** Fit an existing cage to the scan (optionally to a masked region only). */
+  async fitCage({ mesh, mask, cage, opts }: { mesh: MeshData; mask?: Uint8Array; cage: import("../freeform/quadMesh").QuadMesh; opts: Record<string, unknown> }, progress) {
+    const { compactMesh } = await import("../mesh/topology");
+    const { decimate } = await import("../mesh/decimate");
+    const { MeshSpatialIndex } = await import("../mesh/spatial");
+    const { fitCageToTarget } = await import("../freeform/fit");
+    let target = mask ? compactMesh(mesh, mask) : mesh;
+    if (target.indices.length / 3 > 600_000) target = decimate(target, { targetTriangles: 600_000 });
+    const index = new MeshSpatialIndex(target);
+    const res = fitCageToTarget(cage, index.asQuery(), { ...opts, onProgress: progress });
+    index.dispose();
+    return { cage: res.cage, rms: res.rms, maxDev: res.maxDev };
+  },
   async boundaryLoops({ mesh }: { mesh: MeshData }) {
     const { findBoundaryLoops } = await import("../mesh/topology");
     return findBoundaryLoops(mesh);
   },
   async fillHoles({ mesh, opts }: { mesh: MeshData; opts: Record<string, unknown> }) {
     const { fillHoles } = await import("../mesh/holes");
-    return fillHoles(mesh, opts as never);
+    return fillHoles(mesh, opts as never).mesh;
   },
   async removeSmallComponents({ mesh, minTriangles, degenerate }: { mesh: MeshData; minTriangles: number; degenerate?: boolean }, progress) {
     const { removeSmallComponents, removeDegenerateTriangles } = await import("../mesh/repair");
@@ -64,7 +126,7 @@ const jobs: Record<string, Job> = {
   },
   async defeature({ mesh, mask }: { mesh: MeshData; mask: Uint8Array }) {
     const { defeature } = await import("../mesh/defeature");
-    return defeature(mesh, mask);
+    return defeature(mesh, mask).mesh;
   },
 };
 

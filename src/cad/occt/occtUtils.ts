@@ -24,14 +24,24 @@ export interface Deletable {
  */
 export class Scope {
   private items: Deletable[] = [];
-  add<T extends Deletable>(o: T): T {
-    if (o && typeof o.delete === "function") this.items.push(o);
+  private cleanups = new Map<Deletable, () => void>();
+  /**
+   * Track `o`; `cleanup` runs right before `o.delete()`. Some OCCT algorithms in this wasm build
+   * only release their internal data structures on an explicit Clear()/Reset() — the
+   * destructor alone leaks (measured: BRepAlgoAPI_* ~0.15 MB per boolean).
+   */
+  add<T extends Deletable>(o: T, cleanup?: (o: T) => void): T {
+    if (o && typeof o.delete === "function") {
+      this.items.push(o);
+      if (cleanup) this.cleanups.set(o, () => cleanup(o));
+    }
     return o;
   }
   /** Stop tracking `o` (it survives the scope, e.g. a result handed to the registry). */
   keep<T>(o: T): T {
     const i = this.items.lastIndexOf(o as unknown as Deletable);
     if (i >= 0) this.items.splice(i, 1);
+    this.cleanups.delete(o as unknown as Deletable);
     return o;
   }
   /** Track an OCCT "result envelope" (object with owned Handle fields and Symbol.dispose). */
@@ -41,15 +51,26 @@ export class Scope {
   }
   dispose(): void {
     for (let i = this.items.length - 1; i >= 0; i--) {
+      const o = this.items[i];
       try {
-        this.items[i].delete();
+        this.cleanups.get(o)?.();
+      } catch {
+        /* best effort */
+      }
+      try {
+        o.delete();
       } catch {
         /* already deleted */
       }
     }
     this.items.length = 0;
+    this.cleanups.clear();
   }
 }
+
+/** Cleanup hooks for algorithms whose destructor does not free everything (see Scope.add). */
+export const clearAlgo = (a: { Clear(): void }) => a.Clear();
+export const resetAlgo = (a: { Reset(): void }) => a.Reset();
 
 export function disposeEnvelope(env: object): void {
   const symDispose = (Symbol as unknown as { dispose?: symbol }).dispose;

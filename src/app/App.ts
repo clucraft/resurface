@@ -17,10 +17,11 @@ import { SelectionController } from "./selection";
 import { initialUiState, type Toast, type UiState } from "./ui-state";
 import { FeatureEvaluator } from "./features";
 import { prepareMesh, markPrepared } from "./MeshRuntime";
-import type { Tool, ToolPointerEvent } from "../tools/Tool";
+import type { AnyTool, ToolPointerEvent } from "../tools/Tool";
 import { compute } from "./compute";
 import { transformEntityPatch } from "./transform";
 import { lazy } from "./lazy";
+import { nextFrame } from "../core/frame";
 
 let toastId = 1;
 
@@ -31,8 +32,8 @@ export class App {
   sync: SceneSync | null = null;
   readonly selection = new SelectionController(this);
   readonly features = new FeatureEvaluator(this);
-  private tool: Tool<object> | null = null;
-  readonly toolStore = new Store<Tool<object> | null>(null);
+  private tool: AnyTool | null = null;
+  readonly toolStore = new Store<AnyTool | null>(null);
   private kernelPromise: Promise<KernelClient> | null = null;
   /** body id -> last evaluation error */
   readonly bodyErrors = new Store<Record<string, string>>({});
@@ -191,7 +192,7 @@ export class App {
         const patch = transformEntityPatch(m, e);
         if (!patch) continue;
         if (e.kind === "mesh") (patch as Partial<MeshEntity>).mesh = prepareMesh((patch as MeshEntity).mesh, { keepOrder: true });
-        this.doc.update(id, patch);
+        this.doc.update(id, patch as never);
       }
     });
   }
@@ -267,11 +268,11 @@ export class App {
   // Tools
   // -------------------------------------------------------------------------
 
-  get activeTool(): Tool<object> | null {
+  get activeTool(): AnyTool | null {
     return this.tool;
   }
 
-  startTool(tool: Tool<object>): void {
+  startTool(tool: AnyTool): void {
     if (this.tool) this.endTool(false);
     this.tool = tool;
     this.toolStore.set(tool);
@@ -355,7 +356,8 @@ export class App {
   private updateCursor(e: ToolPointerEvent): void {
     // throttle picking for the status-bar coordinate readout
     if (this.cursorFrame) return;
-    this.cursorFrame = requestAnimationFrame(() => {
+    this.cursorFrame = 1;
+    nextFrame(() => {
       this.cursorFrame = 0;
       const hit = e.pick();
       this.ui.patch({ cursor: hit ? hit.point : null });

@@ -140,7 +140,7 @@ function joinSegments(nodePos: Float64Array, segA: Uint32Array, segB: Uint32Arra
   const chain = new GrowableU32(256);
   const dirs = new GrowableI32(256);
 
-  const walk = (start: number, closedExpected: boolean) => {
+  const walk = (start: number) => {
     chain.clear();
     dirs.clear();
     let cur = start;
@@ -163,7 +163,6 @@ function joinSegments(nodePos: Float64Array, segA: Uint32Array, segB: Uint32Arra
       chain.push(nxt);
       cur = nxt;
     }
-    void closedExpected;
     emitChain(chain.view(), dirs.view(), closed);
   };
 
@@ -195,7 +194,7 @@ function joinSegments(nodePos: Float64Array, segA: Uint32Array, segB: Uint32Arra
   for (let v = 0; v < nn; v++) {
     if (visited[v]) continue;
     const deg = (slot[2 * v] >= 0 ? 1 : 0) + (slot[2 * v + 1] >= 0 ? 1 : 0);
-    if (deg === 1) walk(v, false);
+    if (deg === 1) walk(v);
   }
   // remaining nodes lie on closed loops (or are isolated)
   for (let v = 0; v < nn; v++) {
@@ -205,7 +204,7 @@ function joinSegments(nodePos: Float64Array, segA: Uint32Array, segB: Uint32Arra
       visited[v] = 1;
       continue;
     }
-    walk(v, true);
+    walk(v);
   }
   return out;
 }

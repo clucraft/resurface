@@ -568,6 +568,71 @@ class Segmenter {
     return ps.map((p) => this.fit(p.s - shift, p.e - shift));
   }
 
+  /**
+   * Remove small pieces by letting their two neighbours absorb them (with the best split point inside
+   * the removed range) when both neighbours still fit within tolerance.
+   */
+  eliminate(pieces: Piece[]): Piece[] {
+    let ps = pieces.slice();
+    const N = this.N;
+    const small = Math.max(4 * this.minPts, 8);
+    for (let guard = 0; guard < 200; guard++) {
+      const K = ps.length;
+      if (K < (this.closed ? 3 : 2)) break;
+      const order = ps.map((_, k) => k).sort((a, b) => ps[a].e - ps[a].s - (ps[b].e - ps[b].s));
+      let done = false;
+      for (const k of order) {
+        const pc = ps[k];
+        if (pc.e - pc.s + 1 > small) break;
+        const hasPrev = this.closed || k > 0;
+        const hasNext = this.closed || k < K - 1;
+        if (!hasPrev || !hasNext) continue; // end pieces: plain merging handles them
+        const kp = (k - 1 + K) % K, kn = (k + 1) % K;
+        const A = ps[kp], B = ps[kn];
+        // unwrapped coordinates relative to the removed piece
+        const As = kp < k ? A.s : A.s - N;
+        const Be = kn > k ? B.e : B.e + N;
+        let best: [Piece, Piece] | null = null, bestErr = Infinity;
+        for (let b = pc.s; b <= pc.e; b++) {
+          if (b - As + 1 < this.minPts || Be - b + 1 < this.minPts) continue;
+          const nA = this.fit(As, b), nB = this.fit(b, Be);
+          if (!nA.ok || !nB.ok) continue;
+          const err = Math.max(nA.err, nB.err);
+          if (err < bestErr) {
+            bestErr = err;
+            best = [nA, nB];
+          }
+        }
+        if (!best) continue;
+        // rebuild the cyclic/open list without piece k
+        const next: Piece[] = [];
+        for (let i = 0; i < K; i++) {
+          if (i === k) continue;
+          if (i === kp) next.push(best[0]);
+          else if (i === kn) next.push(best[1]);
+          else next.push(ps[i]);
+        }
+        // order: for closed data starting with the wrap, re-sort by unwrapped start after normalising
+        ps = this.closed ? this.reorder(next) : next;
+        done = true;
+        break;
+      }
+      if (!done) break;
+    }
+    return ps;
+  }
+
+  /** Re-establish cyclic order (pieces consecutive, first piece starting in [0, N)) after edits. */
+  reorder(ps: Piece[]): Piece[] {
+    const N = this.N;
+    const norm = ps.map((p) => {
+      const shift = Math.floor(p.s / N) * N;
+      return shift ? this.fit(p.s - shift, p.e - shift) : p;
+    });
+    norm.sort((a, b) => a.s - b.s);
+    return norm;
+  }
+
   /** Move junctions to minimise the summed squared distances to the two adjacent primitives. */
   refine(pieces: Piece[], rounds = 3): Piece[] {
     let ps = pieces.slice();
@@ -580,11 +645,10 @@ class Segmenter {
         const A = ps[k];
         const wrap = k + 1 >= K;
         const B0 = ps[(k + 1) % K];
-        const Bs = wrap ? B0.s + N : B0.s, Be = wrap ? B0.e + N : B0.e;
+        const Be = wrap ? B0.e + N : B0.e;
         const lo = A.s + this.minPts - 1, hi = Be - this.minPts + 1;
         if (lo > hi) continue;
         let acc = 0;
-        const cost: number[] = [];
         // cost(b) = sum_{A.s..b} dA^2 + sum_{b..Be} dB^2
         const dA: number[] = [], dB: number[] = [];
         for (let i = A.s; i <= Be; i++) {
@@ -600,7 +664,6 @@ class Segmenter {
           const b = A.s + i;
           if (b < lo || b > hi) continue;
           const c = acc + suffix[i];
-          cost[i] = c;
           if (c < bestC - 1e-15) {
             bestC = c;
             bestB = b;
@@ -615,7 +678,6 @@ class Segmenter {
         if ((nA.ok && nB.ok) || newWorst < oldWorst) {
           ps[k] = nA;
           ps[(k + 1) % K] = wrap ? this.fit(bestB - N, Be - N) : nB;
-          void Bs;
           changed = true;
         }
       }
@@ -738,6 +800,21 @@ function nearlyTangent(A: Prim, B: Prim, q: Vec2, tol: number): boolean {
   return ta[0] * tb[0] + ta[1] * tb[1] > 0.9;
 }
 
+/** Robust 1D minimisation: coarse scan of [a, b] followed by golden section around the best sample. */
+function scanMin(f: (t: number) => number, a: number, b: number, samples = 24): number {
+  let best = a, bf = Infinity;
+  const h = (b - a) / samples;
+  for (let i = 0; i <= samples; i++) {
+    const t = a + h * i;
+    const v = f(t);
+    if (v < bf) {
+      bf = v;
+      best = t;
+    }
+  }
+  return golden(f, Math.max(a, best - h), Math.min(b, best + h));
+}
+
 /** 1D minimisation by golden section on [a, b]. */
 function golden(f: (t: number) => number, a: number, b: number, iters = 60): number {
   const g = (Math.sqrt(5) - 1) / 2;
@@ -787,7 +864,8 @@ function fitArcTangentTo2Lines(pts: Vec2[], arc: Extract<Prim, { type: "arc" }>,
     if (!X1) return null;
     const v: Vec2 = [X1.point[0] - X0.point[0], X1.point[1] - X0.point[1]];
     const C = (r: number): Vec2 => [X0.point[0] + v[0] * r, X0.point[1] + v[1] * r];
-    const r = golden((rr) => arcCost(pts, C(rr), rr), Math.max(1e-9, arc.r * 0.3), arc.r * 3);
+    // stay near the unconstrained estimate (the junctions are tangent within tolerance)
+    const r = scanMin((rr) => arcCost(pts, C(rr), rr), Math.max(1e-9, arc.r * 0.7), arc.r * 1.4);
     return { c: C(r), r };
   }
   // (nearly) parallel lines: radius = half the gap, center slides along the mid line
@@ -796,7 +874,8 @@ function fitArcTangentTo2Lines(pts: Vec2[], arc: Extract<Prim, { type: "arc" }>,
   const base = footOnLine(L1, arc.c);
   const c0: Vec2 = [base[0] + n1[0] * r, base[1] + n1[1] * r];
   const C = (t: number): Vec2 => [c0[0] + L1.d[0] * t, c0[1] + L1.d[1] * t];
-  const t = golden((tt) => arcCost(pts, C(tt), r), -2 * arc.r - r, 2 * arc.r + r);
+  const t0 = (arc.c[0] - c0[0]) * L1.d[0] + (arc.c[1] - c0[1]) * L1.d[1];
+  const t = scanMin((tt) => arcCost(pts, C(tt), r), t0 - 0.5 * r, t0 + 0.5 * r);
   return { c: C(t), r };
 }
 
@@ -973,8 +1052,11 @@ export function autoSegmentDetailed(points: Vec2[], opts: AutoSegmentOptions): A
   pieces = seg.normalize(pieces);
   pieces = seg.merge(pieces);
   pieces = seg.refine(pieces);
+  pieces = seg.eliminate(pieces);
   pieces = seg.merge(pieces);
   pieces = seg.refine(pieces, 2);
+  pieces = seg.eliminate(pieces);
+  pieces = seg.merge(pieces);
 
   // closed loop collapsed into a single arc piece: report as circle
   const K = pieces.length;
@@ -996,6 +1078,17 @@ export function autoSegmentDetailed(points: Vec2[], opts: AutoSegmentOptions): A
     return out;
   };
   const constrainedArc = new Array<boolean>(K).fill(false);
+  // max deviation of a candidate arc from its own data (junction points excluded: they are shared)
+  const arcErr = (k: number, pr: Extract<Prim, { type: "arc" }>): number => {
+    const pc = pieces[k];
+    const trim = pc.e - pc.s + 1 > 4 ? 1 : 0;
+    let mx = 0;
+    for (let i = pc.s + trim; i <= pc.e - trim; i++) {
+      const p = seg.pt(i);
+      mx = Math.max(mx, Math.abs(Math.hypot(p[0] - pr.c[0], p[1] - pr.c[1]) - pr.r));
+    }
+    return mx;
+  };
   for (let k = 0; k < K; k++) {
     const pr = prims[k];
     if (pr.type !== "arc") continue;
@@ -1003,12 +1096,18 @@ export function autoSegmentDetailed(points: Vec2[], opts: AutoSegmentOptions): A
     if (!lines.length) continue;
     const pts = seg.points(pieces[k].s, pieces[k].e);
     const fit = lines.length === 2 && lines[0] !== lines[1] ? fitArcTangentTo2Lines(pts, pr, lines[0], lines[1]) : fitArcTangentTo1Line(pts, pr, lines[0]);
-    if (fit && isFinite(fit.r) && fit.r > 0) {
-      prims[k] = { type: "arc", c: fit.c, r: fit.r, dir: pr.dir };
+    const cand = fit && isFinite(fit.r) && fit.r > 0 ? ({ type: "arc", c: fit.c, r: fit.r, dir: pr.dir } as const) : null;
+    if (cand && arcErr(k, cand) <= tol) {
+      prims[k] = cand;
       constrainedArc[k] = true;
+    } else {
+      // tangency would break the tolerance: keep the free fit, junctions to lines become sharp
+      const prevJ = k - 1 >= 0 ? k - 1 : closed ? K - 1 : -1;
+      if (prevJ >= 0 && prims[(k - 1 + K) % K].type === "line") tangent[prevJ] = false;
+      if (k < nJ && prims[(k + 1) % K].type === "line") tangent[k] = false;
     }
   }
-  // arc-arc tangency: move the unconstrained arc
+  // arc-arc tangency: move an arc that is not yet constrained along the center line
   for (let j = 0; j < nJ; j++) {
     const a = prims[j], b = prims[(j + 1) % K];
     if (!tangent[j] || a.type !== "arc" || b.type !== "arc") continue;
@@ -1019,14 +1118,18 @@ export function autoSegmentDetailed(points: Vec2[], opts: AutoSegmentOptions): A
     }
     const ext = Math.abs(d - (a.r + b.r)) <= Math.abs(d - Math.abs(a.r - b.r));
     const D = ext ? a.r + b.r : Math.abs(a.r - b.r);
+    if (Math.abs(d - D) <= 1e-9 * Math.max(1, a.r, b.r)) continue;
     const u: Vec2 = [(b.c[0] - a.c[0]) / d, (b.c[1] - a.c[1]) / d];
-    if (!constrainedArc[(j + 1) % K]) {
-      prims[(j + 1) % K] = { ...b, c: [a.c[0] + u[0] * D, a.c[1] + u[1] * D] };
-      constrainedArc[(j + 1) % K] = true;
-    } else if (!constrainedArc[j]) {
-      prims[j] = { ...a, c: [b.c[0] - u[0] * D, b.c[1] - u[1] * D] };
+    const kb = (j + 1) % K;
+    const nb = { ...b, c: [a.c[0] + u[0] * D, a.c[1] + u[1] * D] as Vec2 };
+    const na = { ...a, c: [b.c[0] - u[0] * D, b.c[1] - u[1] * D] as Vec2 };
+    if (!constrainedArc[kb] && arcErr(kb, nb) <= tol) {
+      prims[kb] = nb;
+      constrainedArc[kb] = true;
+    } else if (!constrainedArc[j] && arcErr(j, na) <= tol) {
+      prims[j] = na;
       constrainedArc[j] = true;
-    } else if (Math.abs(d - D) > 1e-9 * Math.max(1, a.r, b.r)) tangent[j] = false;
+    } else tangent[j] = false;
   }
 
   // junction points

@@ -268,6 +268,18 @@ describe("solver redundancy and conflicts", () => {
     for (const e of res.sketch.entities) if (e.type === "circle") expect(Number.isFinite(e.radius)).toBe(true);
   });
 
+  it("survives corrupt entities that reference missing points", () => {
+    const s = createSketch();
+    const l = addLine(s, [0, 0], [1, 1]);
+    s.entities.push({ id: "bad", type: "line", p1: "ghost", p2: s.points[0].id });
+    s.constraints.push({ id: "k-bad", type: "horizontal", refs: ["bad"] });
+    addConstraint(s, { type: "length", refs: [l], value: 2 });
+    const res = solveSketch(s);
+    expect(res.status).toBe("ok");
+    expect(res.invalid).toEqual(["k-bad"]);
+    expect(measure(res.sketch, { type: "length", refs: [l] })).toBeCloseTo(2, 9);
+  });
+
   it("ignores invalid constraints and reports them", () => {
     const s = createSketch();
     const l = addLine(s, [0, 0], [1, 1]);
@@ -407,5 +419,39 @@ describe("solver performance", () => {
     const median = times[Math.floor(times.length / 2)];
     console.log(`[solver perf] full solve ${tSolve.toFixed(1)} ms, drag median ${median.toFixed(2)} ms, max ${times[times.length - 1].toFixed(2)} ms, dof ${res.dof}`);
     expect(median).toBeLessThan(20);
+  });
+
+  it("solves a fully constrained 200-gon with large initial errors and drags it", () => {
+    const s = createSketch();
+    const n = 200, R = 300;
+    const pts: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * 2 * Math.PI;
+      pts.push(addPoint(s, [R * Math.cos(a) + Math.sin(i) * 1.5, R * Math.sin(a) + Math.cos(i * 1.3) * 1.5]));
+    }
+    const lines = pts.map((p, i) => addLine(s, p, pts[(i + 1) % n]));
+    const side = 2 * R * Math.sin(Math.PI / n);
+    for (let i = 0; i < n - 1; i++) addConstraint(s, { type: "length", refs: [lines[i]], value: side });
+    for (let i = 0; i < n - 3; i++) addConstraint(s, { type: "angle", refs: [lines[i], lines[i + 1]], value: (2 * Math.PI) / n });
+    addConstraint(s, { type: "fix", refs: [pts[0]] });
+    let t0 = performance.now();
+    const res = solveSketch(s);
+    const tFull = performance.now() - t0;
+    expect(res.status).toBe("ok");
+    expect(res.dof).toBe(2);
+    let cur = res.sketch;
+    const p = getPoint(cur, pts[50])!;
+    const times: number[] = [];
+    for (let k = 1; k <= 10; k++) {
+      t0 = performance.now();
+      const r = solveSketch(cur, { drag: { pointId: pts[50], target: [p.x + k * 0.5, p.y + k * 0.3] } });
+      times.push(performance.now() - t0);
+      expect(r.status).toBe("ok");
+      cur = r.sketch;
+    }
+    times.sort((a, b) => a - b);
+    console.log(`[solver perf] 200-gon (400 unknowns, 396 eqs): full ${tFull.toFixed(1)} ms, drag median ${times[5].toFixed(2)} ms`);
+    expect(times[5]).toBeLessThan(20);
+    for (let i = 0; i < n - 1; i++) expect(measure(cur, { type: "length", refs: [lines[i]] })!).toBeCloseTo(side, 6);
   });
 });

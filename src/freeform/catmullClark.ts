@@ -269,8 +269,11 @@ function fanNormal(topo: Topology, P: ArrayLike<Vec3>, ring: VertexRing, faceIdx
   return n;
 }
 
-/** Limit normal of a smooth (or dart) vertex with a closed ring (Halstead et al. tangent masks). */
-function smoothLimitNormal(topo: Topology, P: ArrayLike<Vec3>, ring: VertexRing): Vec3 {
+/**
+ * Limit tangent vectors (unnormalised) of a smooth / dart vertex with a closed ring
+ * (Halstead et al. masks). The limit tangent along ring edge j is cos(2πj/n) t1 + sin(2πj/n) t2.
+ */
+export function smoothLimitTangents(topo: Topology, P: ArrayLike<Vec3>, ring: VertexRing): [Vec3, Vec3] {
   const n = ring.nbr.length;
   const V = P[ring.v];
   const A = 1 + Math.cos((2 * Math.PI) / n) + Math.cos(Math.PI / n) * Math.sqrt(2 * (9 + Math.cos((2 * Math.PI) / n)));
@@ -283,6 +286,12 @@ function smoothLimitNormal(topo: Topology, P: ArrayLike<Vec3>, ring: VertexRing)
     t1 = add(t1, add(scale(E, A * ci), scale(F, ci + ci1)));
     t2 = add(t2, add(scale(E, A * si), scale(F, si + si1)));
   }
+  return [t1, t2];
+}
+
+/** Limit normal of a smooth (or dart) vertex with a closed ring (Halstead et al. tangent masks). */
+function smoothLimitNormal(topo: Topology, P: ArrayLike<Vec3>, ring: VertexRing): Vec3 {
+  const [t1, t2] = smoothLimitTangents(topo, P, ring);
   return cross(t1, t2);
 }
 

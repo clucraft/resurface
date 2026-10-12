@@ -5,7 +5,7 @@ import type { MeshEntity, PrimitiveEntity, RefLineEntity, RefPointEntity } from 
 import type { Mat4, Vec3 } from "../core/types";
 import { invertRigid, mul4, rotationAxisAngle, transformDir, transformPoint, translation4 } from "../core/vec";
 import { alignToWorld, icp, nPointAlign, type WorldAxis } from "../fit/align";
-import { Tool, type ToolPointerEvent } from "./Tool";
+import { Tool, type ToolClass, type ToolPointerEvent } from "./Tool";
 import { Overlay } from "./overlay";
 import { Section, Field, Select, Check, NumberInput, Stats, Segmented, mm, int } from "../ui/widgets";
 import { pointSprites } from "../viewer/draw";
@@ -519,7 +519,7 @@ class FineAlignTool extends Tool<{ movingId: string; fixedId: string; iterations
 }
 
 export function startAlignTool(app: App, id: string): void {
-  const map: Record<string, new (app: App) => Tool<object>> = {
+  const map: Record<string, ToolClass> = {
     objectAlign: ObjectAlignTool,
     transform: TransformTool,
     nPointAlign: NPointAlignTool,

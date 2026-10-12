@@ -43,6 +43,7 @@ function objectPick(entityId: string, root: THREE.Object3D, priority = 0, sub?: 
     enabled: () => root.visible && !!root.parent,
     raycast(ray, ctx) {
       rc.ray.copy(ray);
+      rc.camera = ctx.camera;
       const px = ctx.pixelSize(ray.origin.clone().addScaledVector(ray.direction, 100));
       rc.params.Line = { threshold: Math.max(px * 6, 1e-3) };
       rc.params.Points = { threshold: Math.max(px * 6, 1e-3) };
@@ -404,7 +405,11 @@ export class BodyView implements EntityView {
     this.group.visible = e.visible;
   }
 
+  /** last tessellation shown (used for edge/face picking by tools) */
+  tess: BodyTessellation | null = null;
+
   setTessellation(t: BodyTessellation | null): void {
+    this.tess = t;
     // materials are shared across tessellations; only geometries are disposed here
     for (const c of [...this.group.children]) {
       this.group.remove(c);

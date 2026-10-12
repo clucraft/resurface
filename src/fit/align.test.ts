@@ -206,6 +206,15 @@ describe("alignToWorld", () => {
     });
     const o = transformPoint(m2, [4 - 0.7, 5, 3]);
     expect(Math.hypot(...o)).toBeLessThan(1e-12);
+    // primary axis (cylinder) + secondary plane with a point → origin at their intersection
+    const m4 = alignToWorld({
+      primary: { kind: "axis", direction: [0, 0, 1], point: [1, 2, 50] },
+      secondary: { kind: "plane", direction: [1, 0, 0.5], point: [0, 0, 7] },
+      primaryTarget: "Z",
+      secondaryTarget: "X",
+    });
+    // axis point (1, 2, z) on plane x + 0.5 z = 3.5 → z = 5
+    expect(Math.hypot(...transformPoint(m4, [1, 2, 5]))).toBeLessThan(1e-12);
     const m3 = alignToWorld({ primary: { kind: "plane", direction: [0, 1, 0], point: [0, 0, 0] }, primaryTarget: "Z", secondaryTarget: "X" });
     expect(transformDir(m3, [0, 1, 0])[2]).toBeCloseTo(1, 12);
     expect(transformDir(m3, [1, 0, 0])[0]).toBeCloseTo(1, 12); // X untouched by the minimal rotation

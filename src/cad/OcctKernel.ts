@@ -38,7 +38,7 @@ import type {
 import { checkCurveDef, checkSurfaceDef } from "./nurbs";
 import { shapeToIgesSurfaces } from "./occt/brepToIges";
 import { loadOcct, type LoadOcctOptions, type OC } from "./occt/loadOcct";
-import { Gp, makeBSplineCurve, makeBSplineSurface, mapShapes, occtError, Scope } from "./occt/occtUtils";
+import { clearAlgo, Gp, makeBSplineCurve, makeBSplineSurface, mapShapes, occtError, resetAlgo, Scope } from "./occt/occtUtils";
 import { arcGeometry, buildRegions, reverseLoop, snapLoop, snapWire, type KSegment, type Region } from "./profile";
 import { writeBinarySTL } from "./stl";
 
@@ -46,6 +46,8 @@ const DEG = Math.PI / 180;
 
 export class OcctKernel implements KernelApi {
   private shapes = new Map<ShapeId, TopoDS_Shape>();
+  /** shapes are immutable, so their info (incl. the costly BRepCheck validity) is cached */
+  private infoCache = new Map<ShapeId, ShapeInfo>();
   private nextId = 1;
   private tmpCounter = 0;
 
@@ -90,12 +92,14 @@ export class OcctKernel implements KernelApi {
     if (s) {
       s.delete();
       this.shapes.delete(id);
+      this.infoCache.delete(id);
     }
   }
 
   releaseAll(): void {
     for (const s of this.shapes.values()) s.delete();
     this.shapes.clear();
+    this.infoCache.clear();
   }
 
   count(): number {
@@ -184,8 +188,7 @@ export class OcctKernel implements KernelApi {
     for (const h of r.holes) mf.Add(this.chainWire(s, gp, f, h));
     if (!mf.IsDone()) throw new Error("planar face construction failed");
     let face = s.add(mf.Face());
-    const an = s.add(new oc.BRepCheck_Analyzer(face, true, false, false));
-    if (!an.IsValid()) {
+    if (!this.isValid(s, face)) {
       const fix = s.add(new oc.ShapeFix_Face(face));
       fix.Perform(gp.progress());
       face = s.add(fix.Face());
@@ -227,8 +230,20 @@ export class OcctKernel implements KernelApi {
     return p.Mass();
   }
 
+  private tinyShape: TopoDS_Shape | null = null;
+
+  /** BRepCheck validity. The analyzer only frees its result map on re-Init (not in its destructor). */
   private isValid(s: Scope, shape: TopoDS_Shape): boolean {
-    return s.add(new this.oc.BRepCheck_Analyzer(shape, true, false, false)).IsValid();
+    const oc = this.oc;
+    if (!this.tinyShape) {
+      const p = new oc.gp_Pnt(0, 0, 0);
+      const mv = new oc.BRepBuilderAPI_MakeVertex(p);
+      this.tinyShape = mv.Vertex();
+      mv.delete();
+      p.delete();
+    }
+    const tiny = this.tinyShape;
+    return s.add(new oc.BRepCheck_Analyzer(shape, true, false, false), (a) => a.Init(tiny, false)).IsValid();
   }
 
   /** Solid from a closed shell, outward oriented. */
@@ -248,7 +263,7 @@ export class OcctKernel implements KernelApi {
 
   private fuseAll(s: Scope, gp: Gp, parts: TopoDS_Shape[]): TopoDS_Shape {
     if (parts.length === 1) return parts[0];
-    const fuse = s.add(new this.oc.BRepAlgoAPI_Fuse());
+    const fuse = s.add(new this.oc.BRepAlgoAPI_Fuse(), clearAlgo);
     fuse.SetArguments(gp.shapeList([parts[0]]));
     fuse.SetTools(gp.shapeList(parts.slice(1)));
     fuse.Build(gp.progress());
@@ -289,7 +304,7 @@ export class OcctKernel implements KernelApi {
         if (a.draftDeg) {
           const first = s.add(mk.FirstShape());
           const last = s.add(mk.LastShape());
-          const da = s.add(new oc.BRepOffsetAPI_DraftAngle(shape));
+          const da = s.add(new oc.BRepOffsetAPI_DraftAngle(shape), clearAlgo);
           const neutral = s.add(new oc.gp_Pln(gp.pnt(frame.origin), gp.dir(frame.zAxis)));
           const pull = gp.dir(dir);
           for (const f of mapShapes(oc, s, shape, oc.TopAbs_ShapeEnum.TopAbs_FACE).shapes) {
@@ -512,7 +527,7 @@ export class OcctKernel implements KernelApi {
             body = this.makeCompound(s, [body, tool]);
             continue;
           }
-          const cut = s.add(new oc.BRepAlgoAPI_Cut(body, tool, gp.progress()));
+          const cut = s.add(new oc.BRepAlgoAPI_Cut(body, tool, gp.progress()), clearAlgo);
           if (cut.HasErrors()) throw new Error("subtracting a profile hole failed");
           body = this.unwrap(s, s.add(cut.Shape()));
         }
@@ -532,11 +547,11 @@ export class OcctKernel implements KernelApi {
       const A = this.get(a), B = this.get(b);
       const algo =
         op === "union"
-          ? s.add(new oc.BRepAlgoAPI_Fuse(A, B, gp.progress()))
+          ? s.add(new oc.BRepAlgoAPI_Fuse(A, B, gp.progress()), clearAlgo)
           : op === "cut"
-            ? s.add(new oc.BRepAlgoAPI_Cut(A, B, gp.progress()))
+            ? s.add(new oc.BRepAlgoAPI_Cut(A, B, gp.progress()), clearAlgo)
             : op === "intersect"
-              ? s.add(new oc.BRepAlgoAPI_Common(A, B, gp.progress()))
+              ? s.add(new oc.BRepAlgoAPI_Common(A, B, gp.progress()), clearAlgo)
               : null;
       if (!algo) throw new Error(`unknown boolean operation '${op}'`);
       if (algo.HasErrors() || !algo.IsDone()) throw new Error("the boolean algorithm reported errors");
@@ -549,7 +564,7 @@ export class OcctKernel implements KernelApi {
 
   split(a: ShapeId, tool: ShapeId): ShapeId {
     return this.run("Split", (s, gp) => {
-      const sp = s.add(new this.oc.BRepAlgoAPI_Splitter());
+      const sp = s.add(new this.oc.BRepAlgoAPI_Splitter(), clearAlgo);
       sp.SetArguments(gp.shapeList([this.get(a)]));
       sp.SetTools(gp.shapeList([this.get(tool)]));
       sp.Build(gp.progress());
@@ -571,7 +586,7 @@ export class OcctKernel implements KernelApi {
     return this.run("Fillet", (s, gp) => {
       if (!(radius > 0)) throw new Error("radius must be > 0");
       const sh = this.get(shape);
-      const mk = s.add(new this.oc.BRepFilletAPI_MakeFillet(sh, this.oc.ChFi3d_FilletShape.ChFi3d_Rational));
+      const mk = s.add(new this.oc.BRepFilletAPI_MakeFillet(sh, this.oc.ChFi3d_FilletShape.ChFi3d_Rational), resetAlgo);
       for (const e of this.pickEdges(s, sh, edgeIds)) mk.Add(radius, e);
       mk.Build(gp.progress());
       if (!mk.IsDone()) throw new Error("radius too large or edges cannot be filleted");
@@ -583,7 +598,7 @@ export class OcctKernel implements KernelApi {
     return this.run("Chamfer", (s, gp) => {
       if (!(distance > 0)) throw new Error("distance must be > 0");
       const sh = this.get(shape);
-      const mk = s.add(new this.oc.BRepFilletAPI_MakeChamfer(sh));
+      const mk = s.add(new this.oc.BRepFilletAPI_MakeChamfer(sh), resetAlgo);
       for (const e of this.pickEdges(s, sh, edgeIds)) mk.Add(distance, e);
       mk.Build(gp.progress());
       if (!mk.IsDone()) throw new Error("distance too large or edges cannot be chamfered");
@@ -752,6 +767,14 @@ export class OcctKernel implements KernelApi {
   }
 
   info(shape: ShapeId): ShapeInfo {
+    const cached = this.infoCache.get(shape);
+    if (cached) return { ...cached, bbox: { min: [...cached.bbox.min], max: [...cached.bbox.max] } };
+    const info = this.computeInfo(shape);
+    this.infoCache.set(shape, info);
+    return { ...info, bbox: { min: [...info.bbox.min], max: [...info.bbox.max] } };
+  }
+
+  private computeInfo(shape: ShapeId): ShapeInfo {
     return this.run("Info", (s) => {
       const oc = this.oc;
       const T = oc.TopAbs_ShapeEnum;
@@ -810,7 +833,9 @@ export class OcctKernel implements KernelApi {
         const ws = s.add(new oc.XSControl_WorkSession());
         const writer = s.add(new oc.STEPCAFControl_Writer(ws, false));
         writer.SetNameMode(true);
-        if (!writer.Perform(doc, path, gp.progress())) throw new Error("the STEP writer reported an error");
+        const ok = writer.Perform(doc, path, gp.progress());
+        ws.ClearData(7); // releases the translated STEP model (limits OCCT-internal retention)
+        if (!ok) throw new Error("the STEP writer reported an error");
         return oc.FS.readFile(path, { encoding: "utf8" });
       } finally {
         try {

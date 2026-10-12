@@ -1,7 +1,7 @@
 /** Procedural "scans" used as built-in samples (and in tests). */
 import type { MeshData } from "../core/types";
 import { addScanNoise, surfaceNets } from "./surfaceNets";
-import { box, cylinder, polygon2D, revolve, smoothUnion, sphere, subtract, union } from "./sdf";
+import { box, cylinder, polygon2D, revolve, smoothUnion, sphere, subtract, torusZ, union } from "./sdf";
 
 export type SampleId = "bracket" | "turned" | "organic";
 
@@ -16,9 +16,14 @@ export function makeSample(id: SampleId, resolution = 1): MeshData {
     case "bracket": {
       const base = box(0, 0, 6, 60, 40, 6, 0.6);
       const wall = box(-50, 0, 38, 10, 40, 38, 0.6);
-      const body = smoothUnion(10, base, wall);
+      // R8 fillet between the base top (z=12) and the wall face (x=-40), built explicitly
+      const filletR = 8;
+      const filletStrip = subtract(box(-40 + filletR / 2, 0, 12 + filletR / 2, filletR / 2, 40, filletR / 2), cylinder("y", -40 + filletR, 0, 12 + filletR, filletR, 41));
       const boss = cylinder("z", 20, 0, 14, 15, 14);
-      const solid = smoothUnion(3, body, boss);
+      // R2.5 ring fillet around the boss foot
+      const ringR = 2.5;
+      const ring = subtract(cylinder("z", 20, 0, 12 + ringR / 2, 15 + ringR, ringR / 2), torusZ(20, 0, 12 + ringR, 15 + ringR, ringR));
+      const solid = union(base, wall, filletStrip, boss, ring);
       const cut = subtract(
         solid,
         cylinder("z", 20, 0, 14, 7.5, 30),

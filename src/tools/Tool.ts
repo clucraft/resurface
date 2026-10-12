@@ -83,4 +83,7 @@ export abstract class Tool<S extends object = Record<string, never>> {
   cancelLabel = "Cancel";
 }
 
-export type ToolFactory = (app: App) => Tool<object>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type AnyTool = Tool<any>;
+export type ToolFactory = (app: App) => AnyTool;
+export type ToolClass = new (app: App) => AnyTool;

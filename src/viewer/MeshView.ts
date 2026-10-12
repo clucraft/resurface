@@ -253,6 +253,12 @@ export class MeshView {
     this.viewer.requestRender();
   }
 
+  /** Hide the orange selection overlay (e.g. while a colour map shows the selection instead). */
+  setSelectionVisible(on: boolean): void {
+    this.selGroup.visible = on;
+    this.viewer.requestRender();
+  }
+
   /** Chunk index containing a triangle (chunks are contiguous and sorted). */
   chunkOfTriangle(tri: number): number {
     let lo = 0, hi = this.chunks.length - 1;

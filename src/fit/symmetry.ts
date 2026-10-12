@@ -249,23 +249,28 @@ function refineCandidate(
   const cosThr = Math.cos(((opts.normalThresholdDeg ?? 60) * Math.PI) / 180);
   const maxIt = opts.maxIterations ?? 60;
   let n = normalize(n0), d = d0;
-  let it = 0;
-  for (; it < maxIt; it++) {
-    const pr = mirrorPairs(S, n, d, opts.query, trim, cosThr, buf);
-    if (pr.kept < 6) break;
-    const up = reflectionUpdate(S, n, d, buf);
-    if (!up) break;
-    const dAng = Math.acos(Math.min(1, Math.abs(dot(up.n, n))));
-    const dOff = Math.abs(up.d - d);
-    n = up.n;
-    d = up.d;
-    if (dAng < 1e-9 && dOff < 1e-9) {
-      it++;
-      break;
+  let total = 0;
+  // Phase 1 without trimming: the pairs that pin down "sliding" directions (e.g. the end faces of
+  // a prismatic part) are exactly the ones a fixed trim would discard while the plane is still off.
+  // Phase 2 with trimming removes genuinely asymmetric regions.
+  const phases = trim > 0 ? [0, trim] : [0];
+  for (const tr of phases) {
+    const budget = tr === 0 && phases.length > 1 ? Math.ceil(maxIt / 2) : maxIt - total;
+    for (let it = 0; it < budget; it++) {
+      const pr = mirrorPairs(S, n, d, opts.query, tr, cosThr, buf);
+      if (pr.kept < 6) break;
+      const up = reflectionUpdate(S, n, d, buf);
+      if (!up) break;
+      const dAng = Math.acos(Math.min(1, Math.abs(dot(up.n, n))));
+      const dOff = Math.abs(up.d - d);
+      n = up.n;
+      d = up.d;
+      total++;
+      if (dAng < 1e-9 && dOff < 1e-9) break;
     }
   }
   const fin = mirrorPairs(S, n, d, opts.query, trim, cosThr, buf);
-  return { n, d, rms: fin.rms, coverage: fin.coverage, iterations: it };
+  return { n, d, rms: fin.rms, coverage: fin.coverage, iterations: total };
 }
 
 /**

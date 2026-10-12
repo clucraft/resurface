@@ -238,6 +238,43 @@ describe("autoSegment", () => {
   });
 });
 
+describe("autoSegment robustness", () => {
+  const h = Math.PI / 2;
+  const shapes: Record<string, { segs: Segment2D[]; lines: number; arcs: number }> = {
+    rrect: { segs: roundedRect(100, 60, 3), lines: 4, arcs: 4 },
+    slot: { segs: [line([0, 0], [50, 0]), arc([50, 10], 10, -h, h), line([50, 20], [0, 20]), arc([0, 10], 10, h, 3 * h)], lines: 2, arcs: 2 },
+    cam: { segs: [arc([0, 0], 20, -h, h), line([0, 20], [-30, 12]), arc([-30, 0], 12, h, 3 * h), line([-30, -12], [0, -20])], lines: 2, arcs: 2 },
+  };
+  it("recovers the primitive counts over seeds, rotations, start offsets and densities", () => {
+    for (const sh of Object.values(shapes))
+      for (let seed = 1; seed <= 6; seed++)
+        for (const step of [0.3, 0.8]) {
+          const r0 = sampleChain(sh.segs, step, 0.025, seed + 50);
+          const c = Math.cos(seed), sn = Math.sin(seed);
+          const rotd = r0.map(([x, y]) => [x * c - y * sn, x * sn + y * c] as Vec2);
+          const off = (seed * 41) % rotd.length;
+          const pts = rotd.slice(off).concat(rotd.slice(0, off));
+          const det = autoSegmentDetailed(pts, { tolerance: 0.1, closed: true });
+          expect(det.segments.filter((s) => s.type === "line").length).toBe(sh.lines);
+          expect(det.segments.filter((s) => s.type === "arc").length).toBe(sh.arcs);
+          expect(det.maxError).toBeLessThan(0.1 * 1.25);
+          expectChained(det.segments, true);
+        }
+  });
+
+  it("approximates free-form data within tolerance", () => {
+    const ell: Vec2[] = [];
+    for (let i = 0; i < 2000; i++) {
+      const a = (i / 2000) * 2 * Math.PI;
+      ell.push([60 * Math.cos(a), 25 * Math.sin(a)]);
+    }
+    const det = autoSegmentDetailed(ell, { tolerance: 0.05, closed: true });
+    expect(det.segments.length).toBeLessThan(30);
+    expect(maxDeviation(ell, det.segments)).toBeLessThan(0.05 * 1.1);
+    expectChained(det.segments, true);
+  });
+});
+
 describe("autoSketch", () => {
   it("builds a constrained sketch with shared points and tangent constraints", () => {
     const truth = roundedRect(100, 60, 8);

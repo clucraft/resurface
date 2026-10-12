@@ -228,66 +228,78 @@ function weldExactRepresentatives(P: Float32Array): Uint32Array {
 /**
  * Greedy tolerance clustering on a hash grid. Returns rep[v] = representative vertex (an input
  * vertex index; rep[r] === r for representatives).
+ *
+ * Cells have size 2·tol, so the tolerance ball around a point overlaps at most 2 cells per axis:
+ * only the 8 cells on the point's side are probed. Each table slot stores the head
+ * representative of a cell (chained through nextRep) plus the cell hash, so most probe
+ * mismatches are rejected without recomputing cell coordinates.
  */
 function weldGridRepresentatives(P: Float32Array, tol: number, onProgress?: ProgressFn): Uint32Array {
   const nv = Math.floor(P.length / 3);
   const rep = new Uint32Array(nv);
   const nextRep = new Int32Array(nv).fill(-1); // chain of representatives in the same cell
   let cap = 1024;
-  while (cap < nv * 1.5) cap *= 2;
+  while (cap < nv) cap *= 2;
   let table = new Int32Array(cap).fill(-1); // slot -> head representative of a cell
+  let slotHash = new Uint32Array(cap);
   let mask = cap - 1;
   let used = 0;
-  const inv = 1 / tol;
+  const cell = 2 * tol;
+  const inv = 1 / cell;
   const tol2 = tol * tol;
-  const cellHash = (cx: number, cy: number, cz: number) =>
-    fmix32((cx >>> 0) ^ fmix32((cy >>> 0) ^ fmix32((cz >>> 0) + 0x632be5ab)));
-  const findSlot = (cx: number, cy: number, cz: number): number => {
-    let s = cellHash(cx, cy, cz) & mask;
+  const cellHash = (cx: number, cy: number, cz: number) => fmix32((cx >>> 0) ^ fmix32((cy >>> 0) ^ fmix32((cz >>> 0) + 0x632be5ab)));
+  const findSlot = (cx: number, cy: number, cz: number, h: number): number => {
+    let s = h & mask;
     for (;;) {
-      const h = table[s];
-      if (h < 0) return s;
-      if (Math.floor(P[3 * h] * inv) === cx && Math.floor(P[3 * h + 1] * inv) === cy && Math.floor(P[3 * h + 2] * inv) === cz) return s;
+      const r = table[s];
+      if (r < 0) return s;
+      if (slotHash[s] === h && Math.floor(P[3 * r] * inv) === cx && Math.floor(P[3 * r + 1] * inv) === cy && Math.floor(P[3 * r + 2] * inv) === cz) return s;
       s = (s + 1) & mask;
     }
   };
   const rehash = () => {
-    const old = table;
+    const oldT = table, oldH = slotHash;
     cap *= 2;
     table = new Int32Array(cap).fill(-1);
+    slotHash = new Uint32Array(cap);
     mask = cap - 1;
-    for (let s = 0; s < old.length; s++) {
-      const h = old[s];
-      if (h < 0) continue;
-      const slot = findSlot(Math.floor(P[3 * h] * inv), Math.floor(P[3 * h + 1] * inv), Math.floor(P[3 * h + 2] * inv));
-      table[slot] = h;
+    for (let s = 0; s < oldT.length; s++) {
+      const r = oldT[s];
+      if (r < 0) continue;
+      let t = oldH[s] & mask;
+      while (table[t] >= 0) t = (t + 1) & mask;
+      table[t] = r;
+      slotHash[t] = oldH[s];
     }
   };
   for (let v = 0; v < nv; v++) {
     const x = P[3 * v], y = P[3 * v + 1], z = P[3 * v + 2];
-    const cx = Math.floor(x * inv), cy = Math.floor(y * inv), cz = Math.floor(z * inv);
+    const fx = x * inv, fy = y * inv, fz = z * inv;
+    const cx = Math.floor(fx), cy = Math.floor(fy), cz = Math.floor(fz);
+    const sx = fx - cx < 0.5 ? -1 : 1, sy = fy - cy < 0.5 ? -1 : 1, sz = fz - cz < 0.5 ? -1 : 1;
     let best = -1, bestD = tol2;
-    for (let dx = -1; dx <= 1; dx++)
-      for (let dy = -1; dy <= 1; dy++)
-        for (let dz = -1; dz <= 1; dz++) {
-          const h = table[findSlot(cx + dx, cy + dy, cz + dz)];
-          for (let r = h; r >= 0; r = nextRep[r]) {
-            const ex = P[3 * r] - x, ey = P[3 * r + 1] - y, ez = P[3 * r + 2] - z;
-            const d = ex * ex + ey * ey + ez * ez;
-            if (d <= bestD) {
-              bestD = d;
-              best = r;
-            }
-          }
+    for (let i = 0; i < 8; i++) {
+      const qx = cx + (i & 1 ? sx : 0), qy = cy + (i & 2 ? sy : 0), qz = cz + (i & 4 ? sz : 0);
+      const head = table[findSlot(qx, qy, qz, cellHash(qx, qy, qz))];
+      for (let r = head; r >= 0; r = nextRep[r]) {
+        const ex = P[3 * r] - x, ey = P[3 * r + 1] - y, ez = P[3 * r + 2] - z;
+        const d = ex * ex + ey * ey + ez * ez;
+        if (d <= bestD) {
+          bestD = d;
+          best = r;
         }
+      }
+    }
     if (best >= 0) {
       rep[v] = best;
       continue;
     }
     rep[v] = v;
-    const slot = findSlot(cx, cy, cz);
+    const h = cellHash(cx, cy, cz);
+    const slot = findSlot(cx, cy, cz, h);
     if (table[slot] < 0) {
       table[slot] = v;
+      slotHash[slot] = h;
       used++;
       if (used * 2 > cap) rehash();
     } else {

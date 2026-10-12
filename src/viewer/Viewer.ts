@@ -23,7 +23,7 @@ export interface PickTarget {
   /** larger = picked preferentially when distances are similar (e.g. lines over meshes) */
   priority?: number;
   enabled(): boolean;
-  raycast(ray: THREE.Ray, ctx: { pixelSize: (p: THREE.Vector3) => number }): PickHit | null;
+  raycast(ray: THREE.Ray, ctx: { pixelSize: (p: THREE.Vector3) => number; camera: THREE.Camera }): PickHit | null;
 }
 
 export interface ViewerEvents {
@@ -386,7 +386,12 @@ export class Viewer extends Emitter<ViewerEvents> {
     for (const t of this.pickTargets) {
       if (!t.enabled()) continue;
       if (filter && !filter(t.entityId)) continue;
-      const hit = t.raycast(ray, { pixelSize: this.pixelSize });
+      let hit: PickHit | null = null;
+      try {
+        hit = t.raycast(ray, { pixelSize: this.pixelSize, camera: this.camera });
+      } catch (err) {
+        console.warn("pick failed", err);
+      }
       if (!hit) continue;
       // priority acts as a small depth bias so curves/points win over the surface they lie on
       const score = hit.distance - (t.priority ?? 0) * this.pixelSize(new THREE.Vector3(...hit.point)) * 6;

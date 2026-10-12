@@ -604,7 +604,13 @@ export function findNearest(
   for (const e of s.entities) {
     if (opts.includeConstruction === false && e.construction) continue;
     if (!filter(e.id)) continue;
-    for (const seg of entityToSegments(s, e, idx)) {
+    let segs: Segment2D[];
+    try {
+      segs = entityToSegments(s, e, idx);
+    } catch {
+      continue; // entity references missing points
+    }
+    for (const seg of segs) {
       const c = closestPointOnSegment(seg, p);
       if (c.distance <= tol && (!best || c.distance < best.distance)) best = { kind: "entity", id: e.id, distance: c.distance, point: c.point };
     }
@@ -632,6 +638,7 @@ export function sketchBounds(s: Sketch): { min: Vec2; max: Vec2 } | null {
         add(c.x + e.radius, c.y + e.radius);
       }
     } else if (e.type === "arc") {
+      if (!idx.has(e.center) || !idx.has(e.start) || !idx.has(e.end)) continue;
       const g = arcInfo(s, e, idx);
       for (let k = 0; k <= 32; k++) {
         const q = polar(g.center, g.radius, g.startAngle + (g.sweep * k) / 32);
@@ -674,6 +681,14 @@ function pointLineDistance(p: Vec2, a: Vec2, b: Vec2): number {
  * be measured. Distances are unsigned; angles are in [0, PI] between the directed lines.
  */
 export function measure(s: Sketch, c: { type: string; refs: string[] }): number | null {
+  try {
+    return measureImpl(s, c);
+  } catch {
+    return null; // entity references missing points
+  }
+}
+
+function measureImpl(s: Sketch, c: { type: string; refs: string[] }): number | null {
   const idx = new Map(s.points.map((q) => [q.id, q]));
   const r = c.refs.map((id) => resolve(s, id, idx));
   if (r.some((x) => !x)) return null;

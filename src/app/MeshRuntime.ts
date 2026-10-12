@@ -5,8 +5,10 @@
  */
 import type { MeshData, Vec3 } from "../core/types";
 import { MeshSpatialIndex, buildChunks } from "../mesh/spatial";
+import { buildTriangleNeighbors } from "../mesh/topology";
 import type { MeshChunk, MeshView } from "../viewer/MeshView";
 import { prepareMeshData } from "./prepare";
+import { nextFrame } from "../core/frame";
 
 export const CHUNK_TRIANGLES = 262_144;
 
@@ -55,6 +57,13 @@ export class MeshRuntime {
   get spatial(): MeshSpatialIndex {
     if (!this._spatial) this._spatial = new MeshSpatialIndex(this.mesh);
     return this._spatial;
+  }
+
+  private _neighbors: Int32Array | null = null;
+  /** Triangle edge-neighbours (3 per triangle, -1 on boundaries), built on first use. */
+  get neighbors(): Int32Array {
+    if (!this._neighbors) this._neighbors = buildTriangleNeighbors(this.mesh);
+    return this._neighbors;
   }
 
   get hasSpatial(): boolean {
@@ -157,7 +166,7 @@ export class MeshRuntime {
   private scheduleFlush(): void {
     if (this.flushQueued) return;
     this.flushQueued = true;
-    requestAnimationFrame(() => {
+    nextFrame(() => {
       this.flushQueued = false;
       this.flush();
     });

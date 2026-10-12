@@ -20,11 +20,17 @@
  *                        curvature-continuously with the surroundings;
  *       smooth = false: L(v) = 0 at interior vertices (membrane — minimal-area-like, only C0).
  *     Uniform (umbrella) weights; matrix-free conjugate gradients.
+ *     With smooth = true (and quadricBase, default on) a quadratic height field fitted to the
+ *     hole's surroundings serves as base surface and only the residual is faired, so locally
+ *     quadratic shapes (sphere / cylinder / saddle patches) are reproduced inside the hole:
+ *     e.g. a hole of radius 3 in a sphere of radius 10 is filled with < 0.012 max deviation
+ *     (0.06 without the quadric base, 0.43 with the membrane).
  *  Colours of new vertices are interpolated harmonically from the loop colours.
  *
  * Patch-local data (sized by the hole, not by the mesh) uses small typed arrays; the only
  * mesh-sized work is one linear scan to collect the one-ring around loop vertices.
  */
+import { solveLinear } from "../core/linalg";
 import type { MeshData, ProgressFn } from "../core/types";
 import {
   buildTriangleNeighbors,
@@ -47,6 +53,12 @@ export interface FillHolesOptions {
   smooth: boolean;
   /** Insert interior vertices to match the surrounding edge length (default true). */
   refine?: boolean;
+  /**
+   * With smooth = true: fit a quadratic height field to the hole surroundings and fair only the
+   * residual, so locally quadratic surfaces (spheres, cylinders, saddles) are reproduced inside
+   * the hole. Default true; automatically skipped when the hole is not a height field.
+   */
+  quadricBase?: boolean;
   /** Precomputed triangle neighbours (for findBoundaryLoops). */
   neighbors?: Int32Array;
   /** Safety cap on vertices added per hole (default 2,000,000). */
@@ -70,7 +82,7 @@ export interface FillHolesResult {
 }
 
 /** Ear-clipping is used above this loop size; the O(m³) DP below. */
-const DP_LIMIT = 300;
+const DP_LIMIT = 400;
 const SQRT2 = Math.SQRT2;
 
 /**
@@ -140,7 +152,7 @@ export function fillBoundaryLoops(mesh: MeshData, loops: Uint32Array[], opts: Fi
   const addTri = new GrowableU32(1024);
   const maxNew = opts.maxNewVerticesPerHole ?? 2_000_000;
   for (let li = 0; li < loops.length; li++) {
-    const ok = fillOneLoop(ctx, loops[li], nv + addPos.length / 3, opts.smooth, opts.refine ?? true, maxNew, addPos, addCol, addTri);
+    const ok = fillOneLoop(ctx, loops[li], nv + addPos.length / 3, opts.smooth, opts.refine ?? true, opts.quadricBase ?? true, maxNew, addPos, addCol, addTri);
     if (ok) stats.holesFilled++;
     else stats.skipped++;
     opts.onProgress?.((li + 1) / loops.length, "Filling holes");
@@ -187,6 +199,7 @@ function fillOneLoop(
   firstNewId: number,
   smooth: boolean,
   refine: boolean,
+  quadricBase: boolean,
   maxNew: number,
   addPos: GrowableF32,
   addCol: GrowableF32 | null,
@@ -254,7 +267,7 @@ function fillOneLoop(
 
   const nInterior = patch.vertexCount - m;
   // 3. fairing
-  if (nInterior > 0) fairPatch(ctx, patch, Q, local, smooth);
+  if (nInterior > 0) fairPatch(ctx, patch, Q, local, smooth, quadricBase, edgeN);
 
   // 4. emit
   const pv = patch.pos.data;
@@ -306,69 +319,83 @@ function dist3(a: Float64Array, i: number, b: Float64Array, j: number): number {
   return Math.hypot(a[3 * i] - b[3 * j], a[3 * i + 1] - b[3 * j + 1], a[3 * i + 2] - b[3 * j + 2]);
 }
 
-/** Angle between two (not necessarily unit) vectors; 0 if either is zero. */
-function angleOf(a: Float64Array, ao: number, b: Float64Array, bo: number): number {
-  const la = Math.hypot(a[ao], a[ao + 1], a[ao + 2]), lb = Math.hypot(b[bo], b[bo + 1], b[bo + 2]);
-  if (!(la > 0) || !(lb > 0)) return 0;
-  const d = (a[ao] * b[bo] + a[ao + 1] * b[bo + 1] + a[ao + 2] * b[bo + 2]) / (la * lb);
-  return Math.acos(d > 1 ? 1 : d < -1 ? -1 : d);
-}
-
 /**
  * Liepa's DP: weight of a triangulation of sub-polygon (i..k) = (max dihedral angle, area),
  * compared lexicographically. Returns local triangles (3 per triangle) or null.
  */
 function triangulateDP(n: number, px: Float64Array, edgeN: Float64Array, forbidden: (i: number, k: number) => boolean): Int32Array | null {
+  // Work with cosines of dihedral angles (larger = flatter) and cache the unit normal of the
+  // chosen apex triangle of every sub-polygon, so the inner loop needs one cross product.
   const N2 = n * n;
-  const wa = new Float64Array(N2).fill(Infinity);
-  const wr = new Float64Array(N2).fill(Infinity);
+  const wc = new Float64Array(N2).fill(-Infinity); // min cos over the sub-triangulation
+  const wr = new Float64Array(N2).fill(Infinity); // area
   const O = new Int32Array(N2).fill(-1);
+  const nrm = new Float64Array(N2 * 3); // unit normal of triangle (i, O[i,k], k)
   for (let i = 0; i + 1 < n; i++) {
-    wa[i * n + i + 1] = 0;
+    wc[i * n + i + 1] = 1;
     wr[i * n + i + 1] = 0;
   }
-  const tn = new Float64Array(9);
+  // unit edge normals (zero = unknown → no constraint)
+  const en = new Float64Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const l = Math.hypot(edgeN[3 * i], edgeN[3 * i + 1], edgeN[3 * i + 2]);
+    if (l > 0) for (let c = 0; c < 3; c++) en[3 * i + c] = edgeN[3 * i + c] / l;
+  }
+  const cosWith = (x: number, y: number, z: number, arr: Float64Array, o: number): number => {
+    const ax = arr[o], ay = arr[o + 1], az = arr[o + 2];
+    if (ax === 0 && ay === 0 && az === 0) return 1;
+    return x * ax + y * ay + z * az;
+  };
   const EPS = 1e-9;
   for (let len = 2; len < n; len++) {
     for (let i = 0; i + len < n; i++) {
       const k = i + len;
       if (len < n - 1 && forbidden(i, k)) continue;
-      let bestA = Infinity, bestR = Infinity, bestJ = -1;
+      let bestC = -Infinity, bestR = Infinity, bestJ = -1, bx = 0, by = 0, bz = 0;
+      const ix = px[3 * i], iy = px[3 * i + 1], iz = px[3 * i + 2];
+      const kx = px[3 * k] - ix, ky = px[3 * k + 1] - iy, kz = px[3 * k + 2] - iz;
       for (let j = i + 1; j < k; j++) {
-        const a1 = wa[i * n + j], a2 = wa[j * n + k];
-        if (a1 === Infinity || a2 === Infinity) continue;
-        const twoArea = triCross(px, i, j, k, tn, 0);
-        let ang = a1 > a2 ? a1 : a2;
-        // across edge (i,j)
-        let a: number;
-        if (j === i + 1) a = angleOf(tn, 0, edgeN, 3 * i);
-        else {
-          triCross(px, i, O[i * n + j], j, tn, 3);
-          a = angleOf(tn, 0, tn, 3);
+        const c1 = wc[i * n + j], c2 = wc[j * n + k];
+        if (c1 === -Infinity || c2 === -Infinity) continue;
+        const jx = px[3 * j] - ix, jy = px[3 * j + 1] - iy, jz = px[3 * j + 2] - iz;
+        let nx = jy * kz - jz * ky, ny = jz * kx - jx * kz, nz = jx * ky - jy * kx;
+        const twoArea = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        let c = c1 < c2 ? c1 : c2;
+        if (twoArea > 0) {
+          nx /= twoArea;
+          ny /= twoArea;
+          nz /= twoArea;
+          // across edge (i,j), (j,k) and — for the outermost triangle — the closing edge (n-1, 0)
+          const ca = j === i + 1 ? cosWith(nx, ny, nz, en, 3 * i) : cosWith(nx, ny, nz, nrm, 3 * (i * n + j));
+          if (ca < c) c = ca;
+          const cb = k === j + 1 ? cosWith(nx, ny, nz, en, 3 * j) : cosWith(nx, ny, nz, nrm, 3 * (j * n + k));
+          if (cb < c) c = cb;
+          if (i === 0 && k === n - 1) {
+            const cc = cosWith(nx, ny, nz, en, 3 * (n - 1));
+            if (cc < c) c = cc;
+          }
+        } else {
+          c = -1; // degenerate triangle: worst possible
+          nx = ny = nz = 0;
         }
-        if (a > ang) ang = a;
-        if (k === j + 1) a = angleOf(tn, 0, edgeN, 3 * j);
-        else {
-          triCross(px, j, O[j * n + k], k, tn, 6);
-          a = angleOf(tn, 0, tn, 6);
-        }
-        if (a > ang) ang = a;
-        if (i === 0 && k === n - 1) {
-          a = angleOf(tn, 0, edgeN, 3 * (n - 1));
-          if (a > ang) ang = a;
-        }
-        if (!(twoArea > 0)) ang = Math.max(ang, Math.PI); // degenerate triangle: worst angle
         const area = wr[i * n + j] + wr[j * n + k] + 0.5 * twoArea;
-        if (ang < bestA - EPS || (ang <= bestA + EPS && area < bestR)) {
-          bestA = ang;
+        if (c > bestC + EPS || (c >= bestC - EPS && area < bestR)) {
+          bestC = c;
           bestR = area;
           bestJ = j;
+          bx = nx;
+          by = ny;
+          bz = nz;
         }
       }
       if (bestJ >= 0) {
-        wa[i * n + k] = bestA;
-        wr[i * n + k] = bestR;
-        O[i * n + k] = bestJ;
+        const o = i * n + k;
+        wc[o] = bestC;
+        wr[o] = bestR;
+        O[o] = bestJ;
+        nrm[3 * o] = bx;
+        nrm[3 * o + 1] = by;
+        nrm[3 * o + 2] = bz;
       }
     }
   }
@@ -779,9 +806,17 @@ function angleAt(p: Float64Array, v: number, a: number, b: number): number {
 /**
  * Builds local one-ring lists (patch + surrounding mesh around loop vertices) and solves for the
  * interior vertex positions with CG. Local ids: [0, m) loop, [m, V) interior, [V, V+R) outer
- * ring (fixed, positions in `extra`).
+ * ring (fixed, positions in `outerPos`).
+ *
+ * smooth = false: membrane (L x = 0 at interior vertices).
+ * smooth = true : membrane as initial guess, then thin plate (min Σ‖L‖² over interior + loop
+ *   vertices). Additionally, when the hole region is a height field over the loop's best-fit
+ *   plane, a quadratic height function z = q(x, y) is fitted to the loop and the surrounding
+ *   ring, and the thin plate is applied to the residual z − q instead: surfaces that are locally
+ *   quadratic (spheres, cylinders, saddles, gentle free-form) are then reproduced inside the hole
+ *   (curvature continuity), while deviations from the quadric still blend smoothly.
  */
-function fairPatch(ctx: MeshCtx, patch: Patch, Q: Uint32Array, local: IntFloatMap, smooth: boolean): void {
+function fairPatch(ctx: MeshCtx, patch: Patch, Q: Uint32Array, local: IntFloatMap, smooth: boolean, quadricBase: boolean, edgeN: Float64Array): void {
   const { P, I, slotOf, ringOff, ringTri } = ctx;
   const m = patch.nLoop;
   const V = patch.vertexCount;
@@ -844,42 +879,38 @@ function fairPatch(ctx: MeshCtx, patch: Patch, Q: Uint32Array, local: IntFloatMa
 
   const pos = patch.pos.data;
   const op = outerPos.data;
-  const coord = (v: number, c: number) => (v < V ? pos[3 * v + c] : op[3 * (v - V) + c]);
+  const nOuter = outerPos.length / 3;
   const isUnknown = (v: number) => v >= m && v < V;
+  const x = new Float64Array(nU);
+  const rhs = new Float64Array(nU);
 
-  // --- membrane: K x = f (interior rows), K = graph Laplacian restricted to unknowns
-  const applyK = (x: Float64Array, out: Float64Array) => {
+  // --- scalar solvers over the patch graph; `fixed(v)` gives the value at loop/outer vertices,
+  //     x holds the initial guess for the unknowns and receives the result.
+  const applyK = (xx: Float64Array, out: Float64Array) => {
     for (let u = 0; u < nU; u++) {
       const v = m + u;
-      let s = deg[v] * x[u];
+      let s = deg[v] * xx[u];
       for (let r = off[v], e = fill[v]; r < e; r++) {
         const w = adj[r];
-        if (isUnknown(w)) s -= x[w - m];
+        if (isUnknown(w)) s -= xx[w - m];
       }
       out[u] = s;
     }
   };
-  const x = new Float64Array(nU);
-  const rhs = new Float64Array(nU);
-  const maxIterMembrane = Math.min(5000, 200 + 4 * Math.ceil(Math.sqrt(nU)) * 10);
-  for (let c = 0; c < 3; c++) {
+  const solveMembrane = (fixed: (v: number) => number) => {
     for (let u = 0; u < nU; u++) {
       const v = m + u;
       let f = 0;
       for (let r = off[v], e = fill[v]; r < e; r++) {
         const w = adj[r];
-        if (!isUnknown(w)) f += coord(w, c);
+        if (!isUnknown(w)) f += fixed(w);
       }
       rhs[u] = f;
-      x[u] = pos[3 * v + c];
     }
-    conjugateGradient(applyK, rhs, x, maxIterMembrane, 1e-10);
-    for (let u = 0; u < nU; u++) pos[3 * (m + u) + c] = x[u];
-  }
-  if (!smooth) return;
-
-  // --- thin plate: minimise Σ_{s in patch} ‖L(s)‖², L(s) = mean(N(s)) − p_s
-  // A: rows = all patch vertices (V), cols = unknowns. Solve AᵀA x = −Aᵀ b.
+    conjugateGradient(applyK, rhs, x, Math.min(5000, 200 + 40 * Math.ceil(Math.sqrt(nU))), 1e-10);
+  };
+  // thin plate: minimise Σ_{s in patch} ‖L(s)‖², L(s) = mean(N(s)) − p_s; A: rows = patch
+  // vertices, cols = unknowns; normal equations AᵀA x = −Aᵀ b
   const Ax = new Float64Array(V);
   const applyAtA = (xx: Float64Array, out: Float64Array) => {
     for (let s = 0; s < V; s++) {
@@ -911,9 +942,7 @@ function fairPatch(ctx: MeshCtx, patch: Patch, Q: Uint32Array, local: IntFloatMa
     }
   };
   const bRow = new Float64Array(V);
-  const maxIterBi = Math.min(20000, 500 + 40 * nU);
-  for (let c = 0; c < 3; c++) {
-    // b_s = fixed part of L(s)
+  const solveThinPlate = (fixed: (v: number) => number) => {
     for (let s = 0; s < V; s++) {
       const d = deg[s];
       if (d === 0) {
@@ -923,13 +952,12 @@ function fairPatch(ctx: MeshCtx, patch: Patch, Q: Uint32Array, local: IntFloatMa
       let acc = 0;
       for (let r = off[s], e = fill[s]; r < e; r++) {
         const w = adj[r];
-        if (!isUnknown(w)) acc += coord(w, c);
+        if (!isUnknown(w)) acc += fixed(w);
       }
       acc /= d;
-      if (!isUnknown(s)) acc -= coord(s, c);
+      if (!isUnknown(s)) acc -= fixed(s);
       bRow[s] = acc;
     }
-    // rhs = −Aᵀ b
     rhs.fill(0);
     for (let s = 0; s < V; s++) {
       const d = deg[s];
@@ -941,9 +969,114 @@ function fairPatch(ctx: MeshCtx, patch: Patch, Q: Uint32Array, local: IntFloatMa
       }
       if (isUnknown(s)) rhs[s - m] += r0;
     }
+    conjugateGradient(applyAtA, rhs, x, Math.min(20000, 500 + 40 * nU), 1e-11);
+  };
+
+  // --- 3D fairing, coordinate by coordinate
+  for (let c = 0; c < 3; c++) {
+    const fixed = (v: number) => (v < V ? pos[3 * v + c] : op[3 * (v - V) + c]);
     for (let u = 0; u < nU; u++) x[u] = pos[3 * (m + u) + c];
-    conjugateGradient(applyAtA, rhs, x, maxIterBi, 1e-12);
+    solveMembrane(fixed);
+    if (smooth) solveThinPlate(fixed);
     for (let u = 0; u < nU; u++) pos[3 * (m + u) + c] = x[u];
+  }
+  if (!smooth || !quadricBase) return;
+
+  // --- quadric base + thin-plate residual (see doc comment) --------------------------------
+  // frame: loop centroid, Newell normal of the (fill-oriented) loop polygon
+  let cx = 0, cy = 0, cz = 0, nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < m; i++) {
+    const j = (i + 1) % m;
+    const xi = pos[3 * i], yi = pos[3 * i + 1], zi = pos[3 * i + 2];
+    const xj = pos[3 * j], yj = pos[3 * j + 1], zj = pos[3 * j + 2];
+    nx += (yi - yj) * (zi + zj);
+    ny += (zi - zj) * (xi + xj);
+    nz += (xi - xj) * (yi + yj);
+    cx += xi / m;
+    cy += yi / m;
+    cz += zi / m;
+  }
+  const nl = Math.hypot(nx, ny, nz);
+  if (!(nl > 0)) return;
+  nx /= nl;
+  ny /= nl;
+  nz /= nl;
+  // height-field test: the surrounding surface must face the frame normal
+  for (let i = 0; i < m; i++) {
+    const ex = edgeN[3 * i], ey = edgeN[3 * i + 1], ez = edgeN[3 * i + 2];
+    if (ex === 0 && ey === 0 && ez === 0) continue;
+    if (ex * nx + ey * ny + ez * nz < 0.3) return;
+  }
+  let ux: number, uy: number, uz: number;
+  if (Math.abs(nx) <= Math.abs(ny) && Math.abs(nx) <= Math.abs(nz)) {
+    ux = 0;
+    uy = nz;
+    uz = -ny;
+  } else if (Math.abs(ny) <= Math.abs(nz)) {
+    ux = -nz;
+    uy = 0;
+    uz = nx;
+  } else {
+    ux = ny;
+    uy = -nx;
+    uz = 0;
+  }
+  const ul = Math.hypot(ux, uy, uz);
+  ux /= ul;
+  uy /= ul;
+  uz /= ul;
+  const vx = ny * uz - nz * uy, vy = nz * ux - nx * uz, vz = nx * uy - ny * ux;
+  // local frame coordinates of every involved vertex
+  const nAll = V + nOuter;
+  const L = new Float64Array(nAll * 3);
+  let rad = 0;
+  for (let v = 0; v < nAll; v++) {
+    const px = v < V ? pos[3 * v] : op[3 * (v - V)];
+    const py = v < V ? pos[3 * v + 1] : op[3 * (v - V) + 1];
+    const pz = v < V ? pos[3 * v + 2] : op[3 * (v - V) + 2];
+    const dx = px - cx, dy = py - cy, dz = pz - cz;
+    L[3 * v] = dx * ux + dy * uy + dz * uz;
+    L[3 * v + 1] = dx * vx + dy * vy + dz * vz;
+    L[3 * v + 2] = dx * nx + dy * ny + dz * nz;
+    if (v < m) rad += Math.hypot(L[3 * v], L[3 * v + 1]) / m;
+  }
+  if (!(rad > 0)) return;
+  // least-squares fit z = a x² + b xy + c y² + d x + e y + f over loop + outer ring (scaled coords)
+  const M = new Float64Array(36), R = new Float64Array(6), row = new Float64Array(6);
+  let nSamples = 0;
+  for (let v = 0; v < nAll; v++) {
+    if (isUnknown(v)) continue;
+    const X = L[3 * v] / rad, Y = L[3 * v + 1] / rad, Z = L[3 * v + 2];
+    row[0] = X * X;
+    row[1] = X * Y;
+    row[2] = Y * Y;
+    row[3] = X;
+    row[4] = Y;
+    row[5] = 1;
+    for (let a = 0; a < 6; a++) {
+      R[a] += row[a] * Z;
+      for (let b = 0; b < 6; b++) M[6 * a + b] += row[a] * row[b];
+    }
+    nSamples++;
+  }
+  if (nSamples < 12) return;
+  const coef = solveLinear(M, R, 6);
+  if (!coef || !coef.every(Number.isFinite)) return;
+  const qz = (v: number) => {
+    const X = L[3 * v] / rad, Y = L[3 * v + 1] / rad;
+    return coef[0] * X * X + coef[1] * X * Y + coef[2] * Y * Y + coef[3] * X + coef[4] * Y + coef[5];
+  };
+  // residual field: fixed at loop/outer, thin plate inside
+  const fixedRes = (v: number) => L[3 * v + 2] - qz(v);
+  x.fill(0);
+  solveThinPlate(fixedRes);
+  for (let u = 0; u < nU; u++) {
+    const v = m + u;
+    const z = qz(v) + x[u];
+    const X = L[3 * v], Y = L[3 * v + 1];
+    pos[3 * v] = cx + X * ux + Y * vx + z * nx;
+    pos[3 * v + 1] = cy + X * uy + Y * vy + z * ny;
+    pos[3 * v + 2] = cz + X * uz + Y * vz + z * nz;
   }
 }
 

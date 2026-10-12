@@ -901,9 +901,11 @@ export interface SurfaceFitOptions {
   /** degree in both directions (default 3) */
   degree?: number;
   /**
-   * thin-plate energy weight relative to the mean squared error (dimensionless and scale
-   * invariant; default 1e-6). Larger = smoother; it also defines the surface across holes and
-   * in the extension area.
+   * Thin-plate energy weight λ relative to the mean squared error (dimensionless and scale
+   * invariant): minimise mean|S−P|² + λ·E_tp. A surface feature with f waves across the domain is
+   * attenuated by ≈ λ(2πf)⁴, so useful values are ~1e-10 (detail) … 1e-5 (very smooth).
+   * Default: 0.03 / (π (max(nu,nv) − degree))⁴, i.e. only control-net-scale wiggles are damped.
+   * Any λ > 0 also defines the surface across holes and in the extension area.
    */
   smoothing?: number;
   /** fraction by which the parameter rectangle is extended beyond the data on each side (default 0.05) */
@@ -925,6 +927,12 @@ export interface SurfaceFitResult {
   residuals: Float32Array;
   /** the parametrisation frame used */
   frame: Frame;
+}
+
+/** Default thin-plate weight for a control net: damps only wiggles at the control-net scale. */
+export function defaultSurfaceSmoothing(nu: number, nv: number, degree = 3): number {
+  const k = Math.max(1, Math.max(nu, nv) - degree);
+  return 0.03 / Math.pow(Math.PI * k, 4);
 }
 
 /** Best-fit plane frame of a selection: origin = centroid, z = normal, x = principal direction. */
@@ -981,7 +989,7 @@ export function fitBSplineSurface(pos: PointArray, opts: SurfaceFitOptions): Sur
   if (!(p >= 1 && p <= 7)) throw new Error("fitBSplineSurface: degree must be in [1, 7]");
   if (!(nu >= p + 1 && nv >= p + 1)) throw new Error(`fitBSplineSurface: nu and nv must be >= degree + 1 (${p + 1})`);
   if (nu * nv > 250 * 250) throw new Error("fitBSplineSurface: too many control points (nu*nv > 62500)");
-  const lam = opts.smoothing ?? 1e-6;
+  const lam = opts.smoothing ?? defaultSurfaceSmoothing(nu, nv, p);
   if (!(lam >= 0)) throw new Error("fitBSplineSurface: smoothing must be >= 0");
   const ext = Math.max(0, opts.extend ?? 0.05);
   const frame = opts.frame ? orthonormalFrame(opts.frame) : defaultFrame(pos, opts);

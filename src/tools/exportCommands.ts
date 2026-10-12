@@ -52,7 +52,7 @@ export async function runExport(app: App, id: string): Promise<void> {
         const k = await app.getKernel();
         return k.exportSTL(await bodyShapes(app), { linearDeflection: 0.02 });
       });
-      if (data && (await saveFile(data as BlobPart, `${projectName(app)}-cad.stl`, "model/stl"))) app.toast("success", "STL saved");
+      if (data && (await saveFile(data, `${projectName(app)}-cad.stl`, "model/stl"))) app.toast("success", "STL saved");
       return;
     }
   }

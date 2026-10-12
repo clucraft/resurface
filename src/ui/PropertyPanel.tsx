@@ -6,7 +6,7 @@ import { EntityInspector } from "./EntityInspector";
 
 export function PropertyPanel() {
   const tool = useStore(app.toolStore);
-  useStore(tool?.state ?? app.ui); // re-render when the tool's state changes
+  useStore((tool?.state ?? app.ui) as typeof app.ui); // re-render when the tool's state changes
   const activeId = useUi((s) => s.activeEntityId);
   const active = useEntity(activeId);
 

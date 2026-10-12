@@ -49,6 +49,17 @@ export const smoothUnion = (k: number, ...fs: SDF[]): SDF => (x, y, z) => {
   return d;
 };
 
+/** Torus around the Z axis direction through (cx, cy, cz): major radius R, tube radius r. */
+export const torusZ = (cx: number, cy: number, cz: number, R: number, r: number): SDF => (x, y, z) =>
+  Math.hypot(Math.hypot(x - cx, y - cy) - R, z - cz) - r;
+
+/** Union with an exact circular fillet of radius r between (roughly) perpendicular surfaces. */
+export const roundUnion = (r: number, a: SDF, b: SDF): SDF => (x, y, z) => {
+  const da = a(x, y, z), db = b(x, y, z);
+  const ux = Math.max(r - da, 0), uy = Math.max(r - db, 0);
+  return Math.max(r, Math.min(da, db)) - Math.hypot(ux, uy);
+};
+
 /** Solid of revolution around Z from a 2D profile SDF in (r, z). */
 export const revolve = (profile: (r: number, z: number) => number): SDF => (x, y, z) => profile(Math.hypot(x, y), z);
 

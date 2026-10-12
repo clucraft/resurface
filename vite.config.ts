@@ -9,7 +9,7 @@ const isolationHeaders = {
   "Cross-Origin-Embedder-Policy": "require-corp",
 };
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   base: "./",
   plugins: [react()],
   worker: {
@@ -20,8 +20,11 @@ export default defineConfig({
     exclude: ["replicad-opencascadejs"],
   },
   server: {
-    port: 5173,
+    port: mode === "nohmr" ? 5174 : 5173,
     headers: isolationHeaders,
+    // "nohmr" mode gives a stable session while files change underneath (reload to update)
+    hmr: mode !== "nohmr",
+    watch: mode === "nohmr" ? null : undefined,
   },
   preview: {
     headers: isolationHeaders,
@@ -35,4 +38,4 @@ export default defineConfig({
     include: ["src/**/*.test.ts"],
     testTimeout: 60000,
   },
-});
+}));

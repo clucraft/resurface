@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { surfaceNets } from "./surfaceNets";
 import { sphere } from "./sdf";
 import { makeSample } from "./samples";
+import { sectionMesh } from "../mesh/section";
 
 function signedVolume(pos: Float32Array, idx: Uint32Array): number {
   let v = 0;
@@ -38,5 +39,17 @@ describe("surface nets", () => {
       expect(signedVolume(m.positions, m.indices)).toBeGreaterThan(0);
       console.log(id, m.indices.length / 3, "tris", (performance.now() - t0).toFixed(0), "ms");
     }
+  });
+
+  it("bracket sections are clean closed loops", () => {
+    const m = makeSample("bracket", 0.7);
+    const loops = sectionMesh(m, { kind: "plane", origin: [0, 0, 6], normal: [0, 0, 1] });
+    expect(loops.length).toBe(4);
+    expect(loops.every((l) => l.closed)).toBe(true);
+    // outer outline spans the full base footprint
+    const outer = loops.reduce((a, b) => (a.points.length > b.points.length ? a : b));
+    const xs = outer.points.map((p) => p[0]);
+    expect(Math.min(...xs)).toBeLessThan(-59.5);
+    expect(Math.max(...xs)).toBeGreaterThan(59.5);
   });
 });
