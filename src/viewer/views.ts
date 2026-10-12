@@ -27,7 +27,7 @@ export const COLORS = {
   symmetry: "#b46cff",
   refline: "#00c2a8",
   refpoint: "#ffd23f",
-  body: "#9fb7d6",
+  body: "#8db8ff",
   bodyEdge: "#1a2230",
   sketch: "#2ee6a6",
   sketch3d: "#ff4fa3",
@@ -458,7 +458,10 @@ export class BodyView implements EntityView {
   }
 
   setHighlight(on: boolean): void {
-    this.faceMat.color.set(on ? COLORS.highlight : this.baseColor);
+    // subtle emissive tint + orange edges instead of repainting the whole body
+    this.faceMat.emissive.set(on ? "#3d2a00" : "#000000");
+    this.edgeMat.color.set(on ? COLORS.highlight : COLORS.bodyEdge);
+    this.edgeMat.linewidth = on ? 2.2 : 1.4;
     this.viewer.requestRender();
   }
 

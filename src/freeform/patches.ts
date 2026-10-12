@@ -8,7 +8,8 @@
  *
  *  - corner point of vertex v: its limit position
  *  - interior point of face-corner (v, f):  (n v + 2 a + 2 b + d) / (n + 5), with a, b the face
- *    neighbours of v and d the diagonal vertex (Loop & Schaefer 2008, "ACC" geometry patches)
+ *    neighbours of v, d the diagonal vertex and n the valence (n = 4 at boundary / crease /
+ *    corner vertices) (Loop & Schaefer 2008, "ACC" geometry patches)
  *  - edge point near v on edge (v, w): mean of the two interior points adjacent to the edge, or
  *    the cubic B-spline curve point (2 v + w) / 3 on boundary / crease edges
  *
@@ -18,8 +19,9 @@
  * Around extraordinary vertices the patches start from Loop–Schaefer ACC geometry patches; with
  * option `g1Seams` (default on) the control points next to each extraordinary vertex are then
  * adjusted to satisfy the sufficient G1 conditions d_A + d_B = alpha(t) c'(t) row by row (exact
- * limit tangent plane at the vertex, near-G1 along the seams: measured < 0.4° vs 4–8° for plain
- * ACC on test cages), still without touching any control point of an exact (regular) patch.
+ * limit tangent plane at the vertex, near-G1 along the seams: measured max normal jump 0–0.5° vs
+ * 1.5–9.5° for plain ACC on the test cages), still without touching any control point of an exact
+ * (regular) patch.
  */
 import { solveLinear } from "../core/linalg";
 import type { BSplineSurfaceDef, Vec3 } from "../core/types";
@@ -91,7 +93,7 @@ function sectorOf(info: CornerInfo, h: number): { sector: RingSector | null; rin
 }
 
 /** Effective valence used in the interior-point mask, and whether the corner is "regular" for that face. */
-function effectiveValence(topo: Topology, P: Vec3[], info: CornerInfo, h: number): { n: number; regular: boolean } {
+function effectiveValence(topo: Topology, info: CornerInfo, h: number): { n: number; regular: boolean } {
   const v = topo.heV[h];
   const kind = info.kind;
   if (kind === NONMANIFOLD) return { n: 4, regular: false };
@@ -160,7 +162,7 @@ function computePatchData(mesh: QuadMesh, opts: PatchOptions): PatchData {
   const regularCorner = new Uint8Array(topo.nh);
   for (let h = 0; h < topo.nh; h++) {
     const v = topo.heV[h];
-    const { n, regular } = effectiveValence(topo, P, info[v], h);
+    const { n, regular } = effectiveValence(topo, info[v], h);
     regularCorner[h] = regular ? 1 : 0;
     const a = P[topo.heV[topo.heNext[h]]];
     const d = P[topo.heV[topo.heNext[topo.heNext[h]]]];
@@ -203,15 +205,16 @@ function computePatchData(mesh: QuadMesh, opts: PatchOptions): PatchData {
  * curve c(t):  d_A(t) + d_B(t) = alpha(t) c'(t)  (d_X = cross-boundary derivative into patch X,
  * alpha linear from alpha0 at v to alpha1 at w), imposed row by row on the Bézier nets.
  *
- * "Jobs" are smooth extraordinary vertices / darts (full ring, angles 2πj/n) and crease or
- * boundary sectors with >= 3 faces (half ring, angles πj/k, the crease edges keep their exact
- * B-spline curve points). For each job:
- *  - row 0: edge points are placed on the limit tangent directions
- *      e_j = p + cos(θ_j) U + sin(θ_j) W
- *    (smooth: U, W = lambda * limit tangents t1, t2 from the tangent masks, lambda fitted to the
- *    ACC edge points; crease: U = crease curve tangent fixed by the curve, W = fitted cross
- *    tangent). Then e_{j-1} + e_{j+1} - 2p = alpha0 (e_j - p), alpha0 = 2cos(Δθ): all patches at the
- *    vertex share its limit tangent plane.
+ * "Jobs" are smooth extraordinary vertices / darts (full ring) and crease or boundary sectors
+ * with >= 3 faces (the crease edges keep their exact B-spline curve points). For each job:
+ *  - row 0: smooth vertices get edge points on the exact limit tangent directions
+ *      e_j = p + lambda (cos(2πj/n) t1 + sin(2πj/n) t2)
+ *    (t1, t2 from the limit tangent masks, lambda fitted to the ACC edge points), so that
+ *    e_{j-1} + e_{j+1} - 2p = alpha0 (e_j - p) with alpha0 = 2cos(2π/n). Crease sectors keep ACC's
+ *    tangential positions projected into the sector tangent plane and use a per-edge
+ *    least-squares alpha0 (the standard boundary rules have no uniform-angle characteristic map;
+ *    measured: this keeps the deviation at ACC level). Either way all patches at the vertex share
+ *    its limit tangent plane.
  *  - row 2 at the far end w of each edge (when w is not itself a job, i.e. alpha1 = 0): w's edge
  *    point is slid along the edge by alpha0 c2 / (alpha0 - 6), which satisfies that row exactly.
  *  - row 1: the interior points x at the vertex solve, in the least-squares sense with a tiny

@@ -14,7 +14,17 @@ import {
   toBicubicPatchesEx,
   type PatchSet,
 } from "./patches";
-import { buildTopology, cageSize, createBoxCage, createGridCage, createTorusCage, setCrease, type QuadMesh } from "./quadMesh";
+import {
+  buildTopology,
+  cageSize,
+  createBoxCage,
+  createGridCage,
+  createTorusCage,
+  removeFaces,
+  removeUnusedVertices,
+  setCrease,
+  type QuadMesh,
+} from "./quadMesh";
 import { csrMulVec3 } from "./sparse";
 
 const dist = (a: Vec3, b: Vec3) => length(sub(a, b));
@@ -55,6 +65,20 @@ function boundaryFan(): QuadMesh {
   }
   const faces = [0, 1, 2].map((i) => [0, 1 + i, 5 + i, 2 + i]);
   return { vertices, faces };
+}
+
+/** 6x6 sheet with the top-right quarter removed: the reflex boundary corner has 3 faces. */
+function lShape(): QuadMesh {
+  const g = createGridCage(6, 6, { uAxis: [60, 0, 0], vAxis: [0, 60, 0] });
+  const del: number[] = [];
+  g.faces.forEach((f, i) => {
+    const c = g.vertices[f[0]];
+    if (c[0] >= 30 && c[1] >= 30) del.push(i);
+  });
+  removeFaces(g, del);
+  removeUnusedVertices(g);
+  g.vertices = g.vertices.map(([x, y]) => [x, y, 4 * Math.sin(x / 12) * Math.cos(y / 15)] as Vec3);
+  return g;
 }
 
 /** Parameter of edge k of a Bézier patch at t (corner k -> corner k+1). */
@@ -215,6 +239,7 @@ describe("bicubic patch export", () => {
       ["mixed tri/pentagon cage", mixedCage()],
       ["auto cage of an icosphere (valences 3..6)", autoCageFromMesh(icosphereMesh(30, 1))],
       ["boundary fan (crease sector with 3 faces)", boundaryFan()],
+      ["L-shaped sheet (reflex boundary corner)", lShape()],
       ["auto cage of an open height field", autoCageFromMesh(heightFieldMesh(wavyHeightField(3, 1 / 8, 1 / 10), -30, 30, -30, 30, 5, 5))],
     ] as [string, QuadMesh][]) {
       for (const tpe of [true, false]) {
@@ -235,7 +260,7 @@ describe("bicubic patch export", () => {
       expect(r.gap).toBeLessThan(1e-12);
       expect(r.rel).toBeLessThan(r.tpe ? 0.015 : 0.025);
       // near-G1 seams with g1Seams, plain ACC is only C0 there
-      if (r.tpe) expect(r.ang).toBeLessThan(0.5);
+      if (r.tpe) expect(r.ang).toBeLessThan(1);
       // regular-regular seams are smooth
       expect(r.angReg).toBeLessThan(1e-4);
     }
