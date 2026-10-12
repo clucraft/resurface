@@ -899,10 +899,13 @@ class SketchEditTool extends Tool<SketchEditState> {
       let created = 0;
       this.edit("Auto fit", (s) => {
         const pool = new Set(s.points.map((q) => q.id));
+        const before = new Set(s.entities.map((e) => e.id));
         for (const c of chains) {
           const sub = fit.autoSketch(c.points, { tolerance: tol, closed: c.closed, horizontalVertical: this.s.autoHV });
           created += mergeSketch(s, sub, (p) => this.pointAt(s, p, pool));
         }
+        // design intent: nearly tangent junctions become exactly tangent (clean fillet chains)
+        autoTangent(s, s.entities.filter((e) => !before.has(e.id)).map((e) => e.id), 6, Math.max(1.5, tol * 15));
       });
       this.app.setStatus(`Auto fit created ${created} entities (tolerance ${tol} mm)`);
     }
@@ -1246,6 +1249,73 @@ class SketchEditTool extends Tool<SketchEditState> {
     this.overlay.dispose();
     this.dynOverlay.dispose();
     for (const m of [this.matGeom, this.matSel, this.matCons, this.matSec, this.matRubber, this.matConflict]) m.dispose();
+  }
+}
+
+/** Unit tangent of an entity leaving the given endpoint (pointing away from it). */
+function tangentAt(s: Sketch, entId: string, pointId: string): Vec2 | null {
+  const e = getEntity(s, entId);
+  if (!e) return null;
+  const P = (id: string) => getPoint(s, id)!;
+  if (e.type === "line") {
+    const a = P(e.p1), b = P(e.p2);
+    const [from, to] = e.p1 === pointId ? [a, b] : [b, a];
+    const l = Math.hypot(to.x - from.x, to.y - from.y) || 1;
+    return [(to.x - from.x) / l, (to.y - from.y) / l];
+  }
+  if (e.type === "arc") {
+    const c = P(e.center), p = P(pointId);
+    const rx = p.x - c.x, ry = p.y - c.y;
+    const l = Math.hypot(rx, ry) || 1;
+    // CCW arc: direction of travel at start is (-ry, rx); leaving the end point goes backwards
+    return e.start === pointId ? [-ry / l, rx / l] : [ry / l, -rx / l];
+  }
+  return null;
+}
+
+/**
+ * Add tangent constraints at line/arc junctions whose directions differ by less than maxDeg.
+ * Arcs smaller than `smallArc` get a much larger allowance: on a scan their end directions are
+ * poorly determined by the few section points they span, so a visible kink is almost always
+ * a fitting artefact rather than design intent.
+ */
+function autoTangent(s: Sketch, ids: string[], maxDeg: number, smallArc = 0): void {
+  const set = new Set(ids);
+  const ends = new Map<string, string[]>();
+  for (const e of s.entities) {
+    if (!set.has(e.id) || e.construction) continue;
+    const pts = e.type === "line" ? [e.p1, e.p2] : e.type === "arc" ? [e.start, e.end] : [];
+    for (const p of pts) ends.set(p, [...(ends.get(p) ?? []), e.id]);
+  }
+  const has = (a: string, b: string) => s.constraints.some((c) => c.type === "tangent" && c.refs.includes(a) && c.refs.includes(b));
+  let added = false;
+  for (const [pt, ents] of ends) {
+    if (ents.length !== 2) continue;
+    const [a, b] = ents;
+    const ea = getEntity(s, a)!, eb = getEntity(s, b)!;
+    if (ea.type === "line" && eb.type === "line") continue;
+    if (has(a, b)) continue;
+    const ta = tangentAt(s, a, pt), tb = tangentAt(s, b, pt);
+    if (!ta || !tb) continue;
+    // leaving directions of a smooth junction are opposite
+    const ang = Math.acos(Math.max(-1, Math.min(1, -(ta[0] * tb[0] + ta[1] * tb[1])))) * (180 / Math.PI);
+    const arcR = (e: typeof ea) => {
+      if (e.type !== "arc") return Infinity;
+      const c = getPoint(s, e.center)!, p0 = getPoint(s, e.start)!;
+      return Math.hypot(p0.x - c.x, p0.y - c.y);
+    };
+    const allowed = Math.min(arcR(ea), arcR(eb)) < smallArc ? 40 : maxDeg;
+    if (ang > allowed) continue;
+    if (validateConstraint(s, { type: "tangent", refs: [a, b] })) continue;
+    addConstraint(s, { type: "tangent", refs: [a, b] });
+    added = true;
+  }
+  if (added) {
+    const r = solveSketch(s, { analyzeConflicts: false });
+    if (r.status === "ok") {
+      s.points = r.sketch.points;
+      s.entities = r.sketch.entities;
+    }
   }
 }
 
