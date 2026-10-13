@@ -141,10 +141,14 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+const TOUR_DIR = process.env.RESURFACE_TOUR_DIR;
+const TOUR_SCRIPT = process.env.RESURFACE_TOUR_SCRIPT;
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1600,
     height: 1000,
+    useContentSize: !!TOUR_DIR,
     minWidth: 1100,
     minHeight: 700,
     backgroundColor: "#0d1117",
@@ -159,7 +163,7 @@ function createWindow() {
     },
   });
   mainWindow.once("ready-to-show", () => {
-    mainWindow?.maximize();
+    if (!TOUR_DIR) mainWindow?.maximize();
     mainWindow?.show();
   });
   mainWindow.webContents.on("did-finish-load", async () => {
@@ -176,6 +180,32 @@ function createWindow() {
   void mainWindow.loadURL(DEV_URL ?? "app://resurface/index.html");
   mainWindow.on("closed", () => (mainWindow = null));
   if (process.env.RESURFACE_SMOKE) void smokeTest(mainWindow, process.env.RESURFACE_SMOKE);
+  if (TOUR_DIR && TOUR_SCRIPT) void runTour(mainWindow, TOUR_DIR, TOUR_SCRIPT);
+}
+
+/**
+ * Documentation tour (RESURFACE_TOUR_DIR + RESURFACE_TOUR_SCRIPT): runs a renderer script that
+ * drives the UI and calls window.resurfaceTour.capture(name) to save screenshots, then quits.
+ */
+async function runTour(win, outDir, scriptPath) {
+  await fs.mkdir(outDir, { recursive: true });
+  ipcMain.handle("tour:capture", async (_e, name) => {
+    const img = await win.webContents.capturePage();
+    await fs.writeFile(path.join(outDir, `${name}.png`), img.toPNG());
+    return true;
+  });
+  const log = [];
+  try {
+    await new Promise((r) => win.webContents.once("did-finish-load", r));
+    await new Promise((r) => setTimeout(r, 3000));
+    const script = await fs.readFile(scriptPath, "utf8");
+    const result = await win.webContents.executeJavaScript(script);
+    log.push({ result });
+  } catch (e) {
+    log.push({ error: String(e) });
+  }
+  await fs.writeFile(path.join(outDir, "tour.json"), JSON.stringify(log, null, 2));
+  app.quit();
 }
 
 /**

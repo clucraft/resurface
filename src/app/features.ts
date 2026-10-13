@@ -92,8 +92,14 @@ export class FeatureEvaluator {
           id = await k.bsplineSurfaceFace({ surface: f.surface });
           break;
         case "freeform": {
-          const { toBicubicPatches } = await lazy<typeof import("../freeform/patches")>("../freeform/patches.ts");
-          const patches = toBicubicPatches(f.cage);
+          const { mergeRegularRegions, toBicubicPatches } = await lazy<typeof import("../freeform/patches")>("../freeform/patches.ts");
+          // fewer, larger NURBS faces (regular grid regions merged) are friendlier to downstream CAD
+          let patches;
+          try {
+            patches = mergeRegularRegions(f.cage).surfaces;
+          } catch {
+            patches = toBicubicPatches(f.cage);
+          }
           id = await k.bsplinePatchesToShape({ surfaces: patches, sewTolerance: 1e-3, makeSolid: f.solid });
           break;
         }

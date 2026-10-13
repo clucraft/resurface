@@ -128,7 +128,15 @@ const jobs: Record<string, Job> = {
     const index = new MeshSpatialIndex(target);
     const res = autosurface(coarse, index.asQuery(), { ...opts, onProgress: (f, m) => progress(0.1 + 0.9 * f, m) });
     index.dispose();
-    return { cage: res.cage, patches: res.patches.length, rms: res.rms, maxDev: res.maxDev, quality: res.quality };
+    // report the face count the CAD body will actually have (regular regions are merged)
+    let patches = res.patches.length;
+    try {
+      const { mergeRegularRegions } = await import("../freeform/patches");
+      patches = mergeRegularRegions(res.cage).surfaces.length;
+    } catch {
+      /* keep the bicubic count */
+    }
+    return { cage: res.cage, patches, rms: res.rms, maxDev: res.maxDev, quality: res.quality };
   },
   /** Fit an existing cage to the scan (optionally to a masked region only). */
   async fitCage({ mesh, mask, cage, opts }: { mesh: MeshData; mask?: Uint8Array; cage: import("../freeform/quadMesh").QuadMesh; opts: Record<string, unknown> }, progress) {

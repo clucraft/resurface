@@ -38,7 +38,18 @@ class FitSurfaceTool extends Tool<FitSurfaceState> {
   private meshId: string;
   private timer = 0;
   private surface: BSplineSurfaceDef | null = null;
-  private surfMat = new THREE.MeshStandardMaterial({ color: "#7fb2ff", roughness: 0.4, metalness: 0.1, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false });
+  private surfMat = new THREE.MeshStandardMaterial({
+    color: "#7fb2ff",
+    roughness: 0.4,
+    metalness: 0.1,
+    transparent: true,
+    opacity: 0.6,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -4,
+  });
   private cageMat = lineMaterial({ color: "#ff4fa3", width: 1, opacity: 0.8 });
   private editId: string | null = null;
 

@@ -57,7 +57,7 @@ interface DeviationState {
   autoRange: boolean;
   tolerance: number;
   maxDistance: number;
-  stats: { rms: number; mean: number; max: number; min: number; within: number; count: number; total: number } | null;
+  stats: { rms: number; mean: number; max: number; min: number; within: number; inside: number; count: number; total: number } | null;
   running: boolean;
 }
 
@@ -158,7 +158,7 @@ class DeviationTool extends Tool<DeviationState> {
 
   private computeStats() {
     const v = this.values!;
-    let n = 0, sum = 0, sq = 0, max = -Infinity, min = Infinity, within = 0;
+    let n = 0, sum = 0, sq = 0, max = -Infinity, min = Infinity, within = 0, inside = 0;
     for (let i = 0; i < v.length; i++) {
       const x = v[i];
       if (!Number.isFinite(x)) continue;
@@ -168,8 +168,9 @@ class DeviationTool extends Tool<DeviationState> {
       if (x > max) max = x;
       if (x < min) min = x;
       if (Math.abs(x) <= this.s.tolerance) within++;
+      if (x < -this.s.tolerance) inside++;
     }
-    this.set({ stats: n ? { rms: Math.sqrt(sq / n), mean: sum / n, max, min, within: within / n, count: n, total: v.length } : null });
+    this.set({ stats: n ? { rms: Math.sqrt(sq / n), mean: sum / n, max, min, within: within / n, inside, count: n, total: v.length } : null });
   }
 
   private applyColors() {
@@ -251,9 +252,14 @@ class DeviationTool extends Tool<DeviationState> {
                 ["Points compared", `${int(st.count)} / ${int(st.total)}`],
                 ["Mean", mm(st.mean, 4)],
                 ["RMS", mm(st.rms, 4), st.rms <= s.tolerance ? "good" : "warn"],
-                ["Max +", mm(st.max, 4)],
-                ["Max −", mm(st.min, 4)],
-                ["Within ±tol", `${(st.within * 100).toFixed(1)} %`, st.within > 0.95 ? "good" : st.within > 0.8 ? "warn" : "bad"],
+                ["Largest +", st.max > 0 ? mm(st.max, 4) : "none"],
+                ["Largest −", st.min < 0 ? mm(st.min, 4) : "none"],
+                ["Within ±tol", `${(st.within * 100).toFixed(1)} %`],
+                [
+                  s.target === "scan" ? "Scan inside CAD" : "CAD inside scan",
+                  st.inside ? `${int(st.inside)} pts` : "none",
+                  st.inside ? "warn" : "good",
+                ],
               ]}
             />
           ) : (

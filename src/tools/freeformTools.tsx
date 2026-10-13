@@ -21,8 +21,20 @@ import { limitMesh, subdivide } from "../freeform/catmullClark";
 import { cageQuality } from "../freeform/analysis";
 import type { BodyView } from "../viewer/views";
 
+// drawn slightly in front of the scan it lies on (polygon offset) so the preview never z-fights with it
 const SURFACE_MAT = () =>
-  new THREE.MeshStandardMaterial({ color: "#7fb2ff", roughness: 0.35, metalness: 0.1, transparent: true, opacity: 0.72, side: THREE.DoubleSide, depthWrite: false });
+  new THREE.MeshStandardMaterial({
+    color: "#7fb2ff",
+    roughness: 0.35,
+    metalness: 0.1,
+    transparent: true,
+    opacity: 0.85,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -4,
+  });
 
 function limitObject(cage: QuadMesh, mat: THREE.Material, levels = 3): THREE.Mesh | null {
   if (!cage.faces.length) return null;
