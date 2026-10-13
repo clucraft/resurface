@@ -32,7 +32,7 @@ describe("surface nets", () => {
   });
 
   it("generates samples", () => {
-    for (const id of ["bracket", "turned", "organic"] as const) {
+    for (const id of ["bracket", "turned", "organic", "grille"] as const) {
       const t0 = performance.now();
       const m = makeSample(id, 0.5);
       expect(m.indices.length).toBeGreaterThan(3000);

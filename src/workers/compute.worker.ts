@@ -60,20 +60,41 @@ const jobs: Record<string, Job> = {
     const c = connectedComponents(mesh, progress);
     return { count: c.count, sizes: c.componentSizes };
   },
-  /** Signed distances from points[start..end) to a target triangle mesh (NaN beyond maxDistance). */
-  async deviation({ points, start, end, target, maxDistance }: { points: Float32Array; start: number; end: number; target: MeshData; maxDistance: number }, progress) {
+  /**
+   * Signed distances from points[start..end) to a target triangle mesh (NaN beyond maxDistance).
+   * For closed solids the sign comes from a ray-parity inside test (robust at edges/corners);
+   * for open surfaces from the face normal at the closest point.
+   */
+  async deviation(
+    { points, start, end, target, maxDistance, closed }: { points: Float32Array; start: number; end: number; target: MeshData; maxDistance: number; closed?: boolean },
+    progress,
+  ) {
     const { MeshSpatialIndex } = await import("../mesh/spatial");
     const index = new MeshSpatialIndex(target);
     const n = end - start;
     const out = new Float32Array(n);
     const p: [number, number, number] = [0, 0, 0];
+    // skewed direction avoids grazing the axis-aligned edges typical of CAD parts
+    const dir: [number, number, number] = [0.5773, 0.5779, 0.5767];
+    const inside = (q: [number, number, number]): boolean => {
+      let o: [number, number, number] = [q[0], q[1], q[2]];
+      let count = 0;
+      for (let k = 0; k < 64; k++) {
+        const h = index.raycast(o, dir);
+        if (!h) break;
+        count++;
+        o = [h.point[0] + dir[0] * 1e-4, h.point[1] + dir[1] * 1e-4, h.point[2] + dir[2] * 1e-4];
+      }
+      return (count & 1) === 1;
+    };
     for (let i = 0; i < n; i++) {
       const v = start + i;
       p[0] = points[3 * v];
       p[1] = points[3 * v + 1];
       p[2] = points[3 * v + 2];
       const hit = index.closestPoint(p, maxDistance);
-      if (!hit) out[i] = NaN;
+      if (!hit || hit.distance > maxDistance) out[i] = NaN;
+      else if (closed) out[i] = inside(p) ? -hit.distance : hit.distance;
       else {
         const s = (p[0] - hit.point[0]) * hit.normal[0] + (p[1] - hit.point[1]) * hit.normal[1] + (p[2] - hit.point[2]) * hit.normal[2];
         out[i] = s >= 0 ? hit.distance : -hit.distance;

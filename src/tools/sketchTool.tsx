@@ -300,6 +300,7 @@ interface SketchEditState {
   showSection: boolean;
   construction: boolean;
   autoHV: boolean;
+  snapSection: boolean;
   version: number;
 }
 
@@ -316,7 +317,7 @@ const MODES: { mode: DrawMode; label: string; icon: typeof Slash; tip: string }[
   { mode: "autoFit", label: "Auto fit", icon: WandSparkles, tip: "Click a section curve (or drag a box) to fit lines & arcs automatically" },
   { mode: "trim", label: "Trim", icon: Scissors, tip: "Click the part of an entity to remove" },
   { mode: "fillet", label: "Fillet", icon: Squircle, tip: "Click a corner shared by two lines" },
-  { mode: "dimension", label: "Dimension", icon: Ruler, tip: "Click one or two items to dimension them (D)" },
+  { mode: "dimension", label: "Dimension", icon: Ruler, tip: "Dimension (D): circle/arc = size, a line twice = length, two items = distance or angle" },
 ];
 
 const CONSTRAINT_BUTTONS: { type: Constraint["type"]; label: string; tip: string }[] = [
@@ -364,6 +365,9 @@ class SketchEditTool extends Tool<SketchEditState> {
   private drag: { pointId: string; moved: boolean; start: Vec2 } | null = null;
   private box: { a: Vec2; b: Vec2; screenA: { x: number; y: number } } | null = null;
   private lastClick = 0;
+  private lastClickPos = { x: -1e9, y: -1e9 };
+  /** Alt held during the current pointer event: place points freely (no snapping) */
+  private altDown = false;
 
   constructor(app: App, private sketchId: string) {
     super(app, {
@@ -376,6 +380,7 @@ class SketchEditTool extends Tool<SketchEditState> {
       autoTol: 0.1,
       clipMesh: true,
       showSection: true,
+      snapSection: true,
       construction: false,
       autoHV: true,
       version: 0,
@@ -514,12 +519,14 @@ class SketchEditTool extends Tool<SketchEditState> {
     return this.app.viewer!.pixelSize(new THREE.Vector3(...frameToWorld(this.frame, p)));
   }
 
+  /** Snap to sketch points, then to section points. Holding Alt disables snapping (free placement). */
   private snap(p: Vec2, exclude?: string): { p: Vec2; id: string | null } {
+    if (this.altDown) return { p, id: null };
     const tol = this.pxSize(p) * 10;
     const near = findNearest(this.sketch, p, tol, { pointsOnly: true, filter: (id) => id !== exclude });
     if (near) return { p: near.point, id: near.id };
     // snap to section points
-    if (this.s.showSection) {
+    if (this.s.showSection && this.s.snapSection) {
       let best: Vec2 | null = null, bd = this.pxSize(p) * 7;
       for (const s of this.entity.sections)
         for (const q of s.points) {
@@ -581,9 +588,12 @@ class SketchEditTool extends Tool<SketchEditState> {
     const p = this.to2D(e.ray);
     if (!p) return true;
     const now = performance.now();
-    const dbl = now - this.lastClick < 320;
+    // a double-click is a second click at (nearly) the same spot shortly after the first
+    const dbl = now - this.lastClick < 320 && Math.hypot(e.x - this.lastClickPos.x, e.y - this.lastClickPos.y) < 6;
     this.lastClick = now;
+    this.lastClickPos = { x: e.x, y: e.y };
     const mode = this.s.mode;
+    this.altDown = e.alt;
     const sn = this.snap(p);
 
     switch (mode) {
@@ -729,6 +739,7 @@ class SketchEditTool extends Tool<SketchEditState> {
     const p = this.to2D(e.ray);
     if (!p) return false;
     this.cursor = p;
+    this.altDown = e.alt;
     if (this.drag && (e.native.buttons & 1)) {
       this.drag.moved = true;
       const pt = getPoint(this.sketch, this.drag.pointId);
@@ -920,6 +931,9 @@ class SketchEditTool extends Tool<SketchEditState> {
       if (kinds[0] === "circle") input = { type: "diameter", refs: sel };
       else if (kinds[0] === "arc") input = { type: "radius", refs: sel };
       else if (waitForSecond) return; // line: wait — a second click may make it a distance/angle
+    } else if (sel.length === 2 && sel[0] === sel[1]) {
+      // the same line clicked twice → its length
+      if (kinds[0] === "line") input = { type: "distance", refs: [sel[0]] };
     } else if (sel.length === 2) {
       if (kinds[0] === "line" && kinds[1] === "line") {
         const ang = measure(s, { type: "angle", refs: sel });
@@ -1227,6 +1241,9 @@ class SketchEditTool extends Tool<SketchEditState> {
             }}
           >
             Show section points
+          </Check>
+          <Check checked={st.snapSection} onChange={(snapSection) => this.set({ snapSection })}>
+            Snap to section points (hold Alt to place freely)
           </Check>
         </Section>
       </>

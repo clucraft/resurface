@@ -97,12 +97,14 @@ class DeviationTool extends Tool<DeviationState> {
       if (this.s.target === "scan") {
         // split scan vertices across the worker pool
         const nv = mesh.positions.length / 3;
+        // closed solids get a robust inside/outside sign (ray parity)
+        const closed = await this.allSolid();
         const parts = Math.max(1, Math.min(compute.size, Math.ceil(nv / 50000)));
         const step = Math.ceil(nv / parts);
         const jobs: Promise<Float32Array>[] = [];
         for (let i = 0; i < parts; i++) {
           const start = i * step, end = Math.min(nv, start + step);
-          jobs.push(compute.run<Float32Array>("deviation", { points: mesh.positions, start, end, target: cad, maxDistance: this.s.maxDistance }));
+          jobs.push(compute.run<Float32Array>("deviation", { points: mesh.positions, start, end, target: cad, maxDistance: this.s.maxDistance, closed }));
         }
         const res = await this.app.busy("Computing deviation", () => Promise.all(jobs));
         if (!res) return;
@@ -120,7 +122,7 @@ class DeviationTool extends Tool<DeviationState> {
         for (let i = 0; i < n; i++) {
           const p: Vec3 = [cad.positions[3 * i], cad.positions[3 * i + 1], cad.positions[3 * i + 2]];
           const hit = q.closestPoint(p, this.s.maxDistance);
-          if (!hit) {
+          if (!hit || hit.distance > this.s.maxDistance) {
             values[i] = NaN;
             continue;
           }
@@ -136,6 +138,21 @@ class DeviationTool extends Tool<DeviationState> {
       this.applyColors();
     } finally {
       this.set({ running: false });
+    }
+  }
+
+  /** True when every visible body is a closed solid (enables the ray-parity sign). */
+  private async allSolid(): Promise<boolean> {
+    try {
+      const k = await this.app.getKernel();
+      for (const b of this.app.doc.ofKind("body")) {
+        if (!b.visible) continue;
+        const info = await k.info(await this.app.features.ensureShape(b.id));
+        if (info.type !== "solid" || !info.closed) return false;
+      }
+      return true;
+    } catch {
+      return false;
     }
   }
 

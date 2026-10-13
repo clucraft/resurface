@@ -50,7 +50,8 @@ export async function runExport(app: App, id: string): Promise<void> {
     case "exportStlCad": {
       const data = await app.busy("Exporting STL", async () => {
         const k = await app.getKernel();
-        return k.exportSTL(await bodyShapes(app), { linearDeflection: 0.02 });
+        // print quality: 0.01 mm chordal error, 5° max angle between facets on curves
+        return k.exportSTL(await bodyShapes(app), { linearDeflection: 0.01, angularDeflectionDeg: 5 });
       });
       if (data && (await saveFile(data, `${projectName(app)}-cad.stl`, "model/stl"))) app.toast("success", "STL saved");
       return;

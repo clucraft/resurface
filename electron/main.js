@@ -97,7 +97,7 @@ function buildMenu() {
         item("Import Scan…", "import", "Ctrl+I"),
         {
           label: "Samples",
-          submenu: [item("Mechanical bracket", "sample:bracket"), item("Turned shaft", "sample:turned"), item("Organic handle", "sample:organic")],
+          submenu: [item("Mechanical bracket", "sample:bracket"), item("Turned shaft", "sample:turned"), item("Organic handle", "sample:organic"), item("Bumper grille", "sample:grille")],
         },
         { type: "separator" },
         item("Export STEP…", "exportStep"),

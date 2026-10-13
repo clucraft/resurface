@@ -33,6 +33,7 @@ class Sketch3DTool extends Tool<S3State> {
   private matDraft = lineMaterial({ color: "#ffd1e8", width: 2, dashed: true, dashSize: 2, depthTest: false });
   private meshId: string;
   private lastClick = 0;
+  private lastClickPos = { x: -1e9, y: -1e9 };
   private hover: Vec3 | null = null;
 
   constructor(app: App, private editId?: string) {
@@ -66,8 +67,10 @@ class Sketch3DTool extends Tool<S3State> {
     if (e.button !== 0) return false;
     const p = this.pickOnMesh(e);
     const now = performance.now();
-    const dbl = now - this.lastClick < 320;
+    // a double-click is a second click at (nearly) the same spot shortly after the first
+    const dbl = now - this.lastClick < 320 && Math.hypot(e.x - this.lastClickPos.x, e.y - this.lastClickPos.y) < 6;
     this.lastClick = now;
+    this.lastClickPos = { x: e.x, y: e.y };
     if (dbl) {
       this.finishCurrent(false);
       return true;

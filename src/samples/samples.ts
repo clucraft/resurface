@@ -3,12 +3,13 @@ import type { MeshData } from "../core/types";
 import { addScanNoise, surfaceNets } from "./surfaceNets";
 import { box, cylinder, polygon2D, revolve, smoothUnion, sphere, subtract, torusZ, union } from "./sdf";
 
-export type SampleId = "bracket" | "turned" | "organic";
+export type SampleId = "bracket" | "turned" | "organic" | "grille";
 
 export const SAMPLE_INFO: { id: SampleId; label: string; description: string }[] = [
   { id: "bracket", label: "Mechanical bracket", description: "Prismatic part with holes, boss and fillet — primitives, sketches, extrudes" },
   { id: "turned", label: "Turned shaft", description: "Rotationally symmetric part — sections and revolve" },
   { id: "organic", label: "Organic handle", description: "Freeform shape — fit surface, quad surfacing, autosurface" },
+  { id: "grille", label: "Bumper grille", description: "Curved slatted grille, scanned at a tilt — align, section, design a clip-on bracket" },
 ];
 
 export function makeSample(id: SampleId, resolution = 1): MeshData {
@@ -44,6 +45,36 @@ export function makeSample(id: SampleId, resolution = 1): MeshData {
       const part = revolve(profile);
       const mesh = surfaceNets(part, [-33, -33, -1], [33, 33, 81], 0.4 / resolution);
       addScanNoise(mesh, 0.01, 11);
+      return mesh;
+    }
+    case "grille": {
+      // Curved grille insert: 300 x 140 mm frame, horizontal slats (8 mm tall, 14 mm gaps, 15 mm deep),
+      // three vertical dividers. The front face follows the bumper curvature (radius 1200 mm across X).
+      // Car-style axes: X = left/right, Y = depth (front face at u = 0, slats extend to +Y), Z = up.
+      const R = 1200;
+      const depth = 15;
+      const curved = (f: (x: number, u: number, z: number) => number) => (x: number, y: number, z: number) => f(x, y - (x * x) / (2 * R), z);
+      const slab = (cx: number, cz: number, hx: number, hz: number, r: number) =>
+        curved((x, u, z) => box(cx, depth / 2, cz, hx, depth / 2, hz, r)(x, u, z));
+      const outer = slab(0, 70, 150, 70, 1.2);
+      const opening = curved((x, u, z) => box(0, depth / 2, 70, 140, depth, 60, 2)(x, u, z));
+      const frame = subtract(outer, opening);
+      const parts = [frame];
+      for (let zc = 19; zc <= 121; zc += 22) parts.push(slab(0, zc, 141, 4, 1.2));
+      for (const xc of [-70, 0, 70]) parts.push(slab(xc, 70, 1.6, 61, 0.6));
+      const grille = union(...parts);
+      const mesh = surfaceNets(grille, [-152, -2, -2], [152, depth + 40, 142], 0.6 / resolution);
+      // as scanned: slightly tilted and offset (use Align → Object Align to straighten it)
+      const ax = (8 * Math.PI) / 180, az = (-6 * Math.PI) / 180;
+      const P = mesh.positions;
+      for (let i = 0; i < P.length; i += 3) {
+        const x = P[i], y = P[i + 1], z = P[i + 2];
+        const y1 = y * Math.cos(ax) - z * Math.sin(ax), z1 = y * Math.sin(ax) + z * Math.cos(ax);
+        P[i] = x * Math.cos(az) - y1 * Math.sin(az) + 12;
+        P[i + 1] = x * Math.sin(az) + y1 * Math.cos(az) - 30;
+        P[i + 2] = z1 + 8;
+      }
+      addScanNoise(mesh, 0.02, 21);
       return mesh;
     }
     case "organic": {

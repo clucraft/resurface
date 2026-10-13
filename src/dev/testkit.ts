@@ -18,7 +18,7 @@ function buttonsByText(text: string): HTMLElement[] {
   return exact.length ? exact : all.filter((b) => norm(b.innerText).includes(t));
 }
 
-function pointer(type: string, x: number, y: number, opts: { button?: number; shift?: boolean; ctrl?: boolean; buttons?: number } = {}) {
+function pointer(type: string, x: number, y: number, opts: { button?: number; shift?: boolean; ctrl?: boolean; alt?: boolean; buttons?: number } = {}) {
   const canvas = app.viewer!.domElement;
   const r = canvas.getBoundingClientRect();
   canvas.dispatchEvent(
@@ -29,6 +29,7 @@ function pointer(type: string, x: number, y: number, opts: { button?: number; sh
       buttons: opts.buttons ?? (type === "pointerup" ? 0 : 1),
       shiftKey: !!opts.shift,
       ctrlKey: !!opts.ctrl,
+      altKey: !!opts.alt,
       bubbles: true,
       pointerId: 1,
       pointerType: "mouse",
@@ -51,13 +52,13 @@ export const rsTest = {
   toScreen(p: Vec3) {
     return app.viewer!.worldToScreen(p);
   },
-  async clickScreen(x: number, y: number, opts: { shift?: boolean; ctrl?: boolean } = {}) {
-    pointer("pointermove", x, y, { buttons: 0 });
+  async clickScreen(x: number, y: number, opts: { shift?: boolean; ctrl?: boolean; alt?: boolean } = {}) {
+    pointer("pointermove", x, y, { buttons: 0, alt: opts.alt });
     pointer("pointerdown", x, y, opts);
     await sleep(10);
     pointer("pointerup", x, y, opts);
   },
-  async clickWorld(p: Vec3, opts: { shift?: boolean; ctrl?: boolean } = {}) {
+  async clickWorld(p: Vec3, opts: { shift?: boolean; ctrl?: boolean; alt?: boolean } = {}) {
     app.viewer!.renderNow();
     const s = app.viewer!.worldToScreen(p);
     await rsTest.clickScreen(s.x, s.y, opts);
