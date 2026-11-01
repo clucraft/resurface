@@ -8,7 +8,7 @@ import {
   Square, Cylinder, Cone, Circle, WandSparkles, Slash, Dot, FlipHorizontal2, Move3d, Crosshair, Magnet,
   PenTool, Spline, Layers, ArrowUpFromLine, Rotate3d, Grid3x3, Shapes, Box, Combine, Squircle,
   FlipHorizontal, Activity, Ruler, Palette, FileDown, FileOutput, Save, FolderOpen, Expand, Minimize2,
-  ArrowLeftRight, CircleDot, Orbit, Blend, Shell, Copy,
+  ArrowLeftRight, CircleDot, Orbit, Blend, Shell, Copy, ScanBox,
 } from "lucide-react";
 import type { App } from "./App";
 
@@ -76,6 +76,7 @@ export const COMMANDS: CommandDef[] = [
   { id: "sketch3d", label: "3D Sketch", icon: Spline, tab: "sketch", group: "Sketch", tooltip: "Draw curves directly on the scan", requires: ["mesh"] },
 
   // Model
+  { id: "autoConvert", label: "Auto Convert", icon: ScanBox, tab: "model", group: "Convert", tooltip: "One-click STL → CAD: rebuild the mesh as a solid of planes, cylinders, cones, spheres and tori (exports to STEP)", requires: ["mesh"] },
   { id: "extrude", label: "Extrude", icon: ArrowUpFromLine, tab: "model", group: "Features", tooltip: "Extrude a sketch into a solid or surface", requires: ["sketch"] },
   { id: "revolve", label: "Revolve", icon: Rotate3d, tab: "model", group: "Features", tooltip: "Revolve a sketch around an axis", requires: ["sketch"] },
   { id: "loft", label: "Loft", icon: Shapes, tab: "model", group: "Features", tooltip: "Loft through several section sketches", requires: ["sketch"], pro: true },

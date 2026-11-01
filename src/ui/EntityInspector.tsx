@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Trash2, Pencil, Eye, EyeOff } from "lucide-react";
 import { app } from "../app/App";
 import type { BodyEntity, Entity, MeshEntity, PrimitiveEntity } from "../core/entities";
@@ -6,6 +7,8 @@ import { Section, Stats, TextInput, Field, NumberInput, Check, mm, deg, int } fr
 import { useStore, useUi } from "./hooks";
 import { editEntity } from "../tools/registry";
 import type { Vec3 } from "../core/types";
+import type { BodyView } from "../viewer/views";
+import { conversionMapColors, FACE_KIND_COLOR, FACE_KIND_ORDER, FACE_KIND_PLURAL } from "../convert/colors";
 
 const v3 = (v: Vec3, d = 3) => `${v[0].toFixed(d)}, ${v[1].toFixed(d)}, ${v[2].toFixed(d)}`;
 
@@ -125,6 +128,46 @@ function PrimitiveInfo({ e }: { e: PrimitiveEntity }) {
   );
 }
 
+/** Auto Convert result: face types and the conversion map on the body. */
+function ConvertedInfo({ e }: { e: BodyEntity }) {
+  const f = e.feature;
+  const [map, setMap] = useState(false);
+  if (f.type !== "converted") return null;
+  const counts = new Map<string, number>();
+  for (const k of f.faceKinds) counts.set(k, (counts.get(k) ?? 0) + 1);
+  const toggle = (on: boolean) => {
+    setMap(on);
+    const view = app.sync?.view<BodyView>(e.id);
+    if (!view) return;
+    view.setVertexColors(on && view.tess ? conversionMapColors(view.tess, f.faceKinds) : null);
+  };
+  return (
+    <>
+      <div className="convert-legend">
+        {FACE_KIND_ORDER.filter((k) => counts.get(k)).map((k) => (
+          <div key={k} className="convert-legend-row">
+            <span className="swatch" style={{ background: FACE_KIND_COLOR[k] }} />
+            <span>{FACE_KIND_PLURAL[k]}</span>
+            <span className="count">{int(counts.get(k)!)}</span>
+          </div>
+        ))}
+      </div>
+      {f.stats && (
+        <Stats
+          rows={[
+            ["Faces", int(f.stats.faces)],
+            ["Faceted triangles", f.stats.facetedTriangles ? int(f.stats.facetedTriangles) : "none"],
+            ["Fit tolerance", mm(f.stats.tolerance, 4)],
+          ]}
+        />
+      )}
+      <Check checked={map} onChange={toggle}>
+        Conversion map
+      </Check>
+    </>
+  );
+}
+
 function BodyInfo({ e }: { e: BodyEntity }) {
   const errors = useStore(app.bodyErrors);
   const f = e.feature;
@@ -169,6 +212,7 @@ function BodyInfo({ e }: { e: BodyEntity }) {
       {(f.type === "fitSurface" || f.type === "freeform") && f.stats && (
         <Stats rows={[["RMS deviation", mm(f.stats.rms)], ["Max deviation", mm(f.stats.maxAbs)]]} />
       )}
+      {f.type === "converted" && <ConvertedInfo e={e} />}
     </Section>
   );
 }

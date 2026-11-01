@@ -9,6 +9,7 @@ import type {
   FitStats,
   Frame,
   LineDef,
+  Mat4,
   MeshData,
   PointCloudData,
   PointDef,
@@ -18,6 +19,7 @@ import type {
 } from "./types";
 import type { Sketch } from "../sketch/model";
 import type { QuadMesh } from "../freeform/quadMesh";
+import type { FaceKind } from "../convert/brepPlan";
 
 export type EntityKind =
   | "mesh"
@@ -139,7 +141,18 @@ export type FeatureDef =
   | { type: "boolean"; op: "union" | "cut" | "intersect"; targetId: string; toolId: string }
   | { type: "fillet"; baseId: string; edges: number[]; radius: number }
   | { type: "chamfer"; baseId: string; edges: number[]; distance: number }
-  | { type: "mirror"; baseId: string; planeOrigin: Vec3; planeNormal: Vec3 };
+  | { type: "mirror"; baseId: string; planeOrigin: Vec3; planeNormal: Vec3 }
+  | {
+      /** STL → CAD conversion result (Auto Convert), stored as OCCT BREP text */
+      type: "converted";
+      brep: string;
+      meshId?: string;
+      /** kind of each face (TopExp::MapShapes order) for the conversion map */
+      faceKinds: FaceKind[];
+      /** rigid transform applied after the conversion (Object Align / Move), column-major */
+      matrix?: Mat4;
+      stats?: { faces: number; facetedTriangles: number; tolerance: number; maxDeviation: number };
+    };
 
 export interface BodyEntity extends BaseEntity {
   kind: "body";

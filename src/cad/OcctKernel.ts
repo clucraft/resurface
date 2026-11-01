@@ -24,6 +24,7 @@ import type {
   LoftArgs,
   PatchesToShapeArgs,
   PatternOptions,
+  PlanBuildResult,
   PrimitiveBounds,
   RevolveArgs,
   ShapeId,
@@ -36,6 +37,8 @@ import type {
   TessellationEdge,
 } from "./kernelTypes";
 import { checkCurveDef, checkSurfaceDef } from "./nurbs";
+import type { BrepPlan } from "../convert/brepPlan";
+import { buildFromPlan } from "./occt/fromPlan";
 import { shapeToIgesSurfaces } from "./occt/brepToIges";
 import { loadOcct, type LoadOcctOptions, type OC } from "./occt/loadOcct";
 import { clearAlgo, Gp, makeBSplineCurve, makeBSplineSurface, mapShapes, occtError, resetAlgo, Scope } from "./occt/occtUtils";
@@ -461,6 +464,14 @@ export class OcctKernel implements KernelApi {
       }
       if (!mf.IsDone()) throw new Error("face construction failed");
       return this.keepAndRegister(s, s.add(mf.Face()));
+    });
+  }
+
+  brepFromPlan(plan: BrepPlan): PlanBuildResult {
+    return this.run("Build CAD model", (s, gp) => {
+      const r = buildFromPlan(this.oc, s, gp, plan);
+      const { faceKinds, failedFaces, invalidFaces, failedEdges, freeEdges } = r;
+      return { id: this.keepAndRegister(s, r.shape), faceKinds, failedFaces, invalidFaces, failedEdges, freeEdges };
     });
   }
 

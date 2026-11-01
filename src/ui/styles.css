@@ -1170,3 +1170,27 @@ kbd {
   gap: 8px;
   padding: 12px 20px 16px;
 }
+
+/* Auto Convert: conversion-map legend */
+.convert-legend {
+  display: grid;
+  gap: 4px;
+  margin: 2px 0 8px;
+}
+.convert-legend-row {
+  display: grid;
+  grid-template-columns: 12px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.convert-legend-row .swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+.convert-legend-row .count {
+  color: var(--text-2, #aab4c0);
+  font-variant-numeric: tabular-nums;
+}

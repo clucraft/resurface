@@ -19,6 +19,7 @@ export const KERNEL_METHODS = [
   "bsplineSurfaceFace",
   "bsplinePatchesToShape",
   "primitiveFace",
+  "brepFromPlan",
   "loft",
   "sweep",
   "boolean",

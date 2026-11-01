@@ -20,12 +20,18 @@ geometry kernel is Open CASCADE 8 compiled to WebAssembly; rendering uses three.
 | **Alignment** | **Object Align** to the world coordinate system from primitives, numeric move/rotate, **N-point** registration of two scans, **fine align** (point-to-plane ICP). |
 | **2D sketching** | Interactive sections (world/reference planes, perpendicular to or through an axis, parallel stacks). Sketch over the section points: lines, 3-point arcs, circles, rectangles, splines; **fit line/arc/circle** to section points; **auto-fit** whole section curves into tangent lines & arcs. Geometric constraints (H, V, coincident, parallel, perpendicular, tangent, equal, concentric, collinear, midpoint, fix) and driving dimensions with a real-time solver. Trim and fillet. |
 | **3D sketching** | Draw smooth curves directly on the scan (spline snapped to the surface). |
+| **Auto Convert (STL → CAD)** | One click (*Model → Auto Convert*) rebuilds an STL exported from CAD as a solid of real faces — planes, cylinders, cones, spheres and tori (fillets) — with exact edges between them, ready for STEP. Areas it cannot recognise stay as faceted faces, so the result is always a closed solid. Conversion map colours faces by type; the **Compare** split view shows STL and CAD side by side. Runs locally, no size limit beyond memory. |
 | **CAD features** | Extrude (one side / symmetric / two sides, draft), revolve, loft through sections, surfaces from primitives, booleans (unite / subtract / intersect), fillet & chamfer with edge picking, mirror. All features stay parametric — edit a sketch or dimension and dependent bodies rebuild. |
 | **Surfacing** | **Fit Surface**: NURBS fitted to a selected region with live deviation map. **Quad Surface**: build a quad cage on the scan (or generate it from a selection); the Catmull–Clark limit surface snaps to the scan. **Autosurface**: one-click NURBS patch layout for organic shapes — G2 everywhere, G1 at extraordinary points, watertight solid when closed. |
 | **Analysis** | Real-time **deviation** colour map (scan → CAD or CAD → scan) with tolerance band and statistics; curvature map; measurements (points, planes, axes, angles). **Compare** split view (viewport toolbar): the scan with its triangle edges left of a draggable divider, the CAD model right of it, same camera. |
 | **Export** | STEP (AP214, named bodies), IGES 5.3 (trimmed NURBS surfaces), STL of CAD bodies or of the scan. Projects save as `.rsf`. |
 
 ## Typical workflow
+
+**STL from CAD (Thingiverse part, lost source file):** import it, click *Model → Auto Convert*, check the
+conversion map and the Compare slider, *Create body*, then *Export → STEP*.
+
+**3D scan:**
 
 1. **Import** a scan and clean it (*Mesh* tab: Clean, Fill Holes, Reduce).
 2. **Smart-select** faces (key `5`) and fit planes / cylinders (*Reference* tab).
@@ -35,7 +41,8 @@ geometry kernel is Open CASCADE 8 compiled to WebAssembly; rendering uses three.
 5. For organic areas use **Fit Surface**, **Quad Surface** or **Autosurface** (*Freeform* tab).
 6. Check **Deviation** (*Analyze* tab) and **Export** STEP / IGES.
 
-Built-in samples (*File → Samples*): a mechanical bracket, a turned shaft and an organic handle.
+Built-in samples (*File → Samples*): a mechanical bracket, a turned shaft, an organic handle, a bumper
+grille, and a mounting plate STL exported from CAD (for trying Auto Convert).
 
 ### Navigation
 

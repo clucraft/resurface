@@ -6,3 +6,4 @@ dist/
 coverage/
 /samples/out/
 release/
+.claude/worktrees/

@@ -106,6 +106,14 @@ export class FeatureEvaluator {
         case "primitive":
           id = await k.primitiveFace(f.def, { size: f.size });
           break;
+        case "converted": {
+          const raw = await k.deserialize(f.brep);
+          if (f.matrix) {
+            id = await k.transform(raw, f.matrix);
+            void k.release(raw);
+          } else id = raw;
+          break;
+        }
         case "loft": {
           const sections = f.sketchIds.map((sid) => {
             const sk = this.sketch(sid);

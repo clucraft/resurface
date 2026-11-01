@@ -3,17 +3,20 @@ import type { MeshData } from "../core/types";
 import { addScanNoise, surfaceNets } from "./surfaceNets";
 import { box, cylinder, polygon2D, revolve, smoothUnion, sphere, subtract, torusZ, union } from "./sdf";
 
-export type SampleId = "bracket" | "turned" | "organic" | "grille";
+export type SampleId = "bracket" | "turned" | "organic" | "grille" | "cadPlate";
 
 export const SAMPLE_INFO: { id: SampleId; label: string; description: string }[] = [
   { id: "bracket", label: "Mechanical bracket", description: "Prismatic part with holes, boss and fillet — primitives, sketches, extrudes" },
   { id: "turned", label: "Turned shaft", description: "Rotationally symmetric part — sections and revolve" },
   { id: "organic", label: "Organic handle", description: "Freeform shape — fit surface, quad surfacing, autosurface" },
   { id: "grille", label: "Bumper grille", description: "Curved slatted grille, scanned at a tilt — align, section, design a clip-on bracket" },
+  { id: "cadPlate", label: "Mounting plate (CAD STL)", description: "STL exported from CAD — try Model → Auto Convert to turn it back into a STEP-ready solid" },
 ];
 
 export function makeSample(id: SampleId, resolution = 1): MeshData {
   switch (id) {
+    case "cadPlate":
+      throw new Error("the CAD sample is built by the kernel (see cadSample.ts)");
     case "bracket": {
       const base = box(0, 0, 6, 60, 40, 6, 0.6);
       const wall = box(-50, 0, 38, 10, 40, 38, 0.6);

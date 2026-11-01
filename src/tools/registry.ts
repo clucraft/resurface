@@ -50,7 +50,15 @@ export async function loadSample(app: App, id: SampleId): Promise<void> {
   const info = SAMPLE_INFO.find((s) => s.id === id)!;
   const first = app.doc.all().length === 0;
   await app.busy(`Generating sample: ${info.label}`, async () => {
-    const mesh = await compute.run<MeshData>("sample", { id });
+    let mesh: MeshData;
+    if (id === "cadPlate") {
+      // a real CAD part, tessellated and imported like any STL file
+      const { buildCadSampleStl } = await import("../samples/cadSample");
+      const stl = await buildCadSampleStl(await app.getKernel());
+      const data = stl.slice().buffer;
+      const res = await compute.run<{ kind: "mesh"; mesh: MeshData }>("import", { name: "mounting-plate.stl", data }, { transfer: [data] });
+      mesh = res.mesh;
+    } else mesh = await compute.run<MeshData>("sample", { id });
     markPrepared(mesh);
     app.addMesh(info.label, mesh, "sample");
   });
@@ -143,6 +151,10 @@ export async function executeCommand(app: App, id: string): Promise<void> {
         return m.startSketch3D(app);
       }
       // --------------------------------------------------------------- model
+      case "autoConvert": {
+        const m = await import("./autoConvertTool");
+        return m.startAutoConvert(app);
+      }
       case "extrude":
       case "revolve":
       case "loft":

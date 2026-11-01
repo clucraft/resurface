@@ -50,6 +50,13 @@ function transformSurface(m: Mat4, s: BSplineSurfaceDef): BSplineSurfaceDef {
   return { ...s, controlPoints: s.controlPoints.map((p) => tp(m, p)) };
 }
 
+/** a · b for column-major 4×4 matrices */
+function mulMat4(a: Mat4, b: Mat4): Mat4 {
+  const o = new Array<number>(16).fill(0);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) for (let k = 0; k < 4; k++) o[c * 4 + r] += a[k * 4 + r] * b[c * 4 + k];
+  return o;
+}
+
 function transformFeature(m: Mat4, f: FeatureDef): FeatureDef {
   switch (f.type) {
     case "revolve":
@@ -62,6 +69,8 @@ function transformFeature(m: Mat4, f: FeatureDef): FeatureDef {
       return { ...f, def: transformPrimitive(m, f.def) };
     case "mirror":
       return { ...f, planeOrigin: tp(m, f.planeOrigin), planeNormal: td(m, f.planeNormal) };
+    case "converted":
+      return { ...f, matrix: f.matrix ? mulMat4(m, f.matrix) : m.slice() };
     default:
       // extrude/loft follow their sketches; booleans/fillets follow their inputs
       return f;

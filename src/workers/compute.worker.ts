@@ -138,6 +138,18 @@ const jobs: Record<string, Job> = {
     }
     return { cage: res.cage, patches, rms: res.rms, maxDev: res.maxDev, quality: res.quality };
   },
+  /**
+   * STL → CAD (Auto Convert): segment the mesh into analytic surfaces and build the B-rep plan.
+   * With `prev` + `demote`, rebuild the plan with those regions turned into facets instead.
+   */
+  async convert(
+    { mesh, tolerance, prev, demote }: { mesh: MeshData; tolerance?: number; prev?: import("../convert").ConvertResult; demote?: number[] },
+    progress,
+  ) {
+    const { convertMesh, replanMesh } = await import("../convert");
+    if (prev && demote) return replanMesh(mesh, prev, demote);
+    return convertMesh(mesh, { tolerance, onProgress: progress });
+  },
   /** Fit an existing cage to the scan (optionally to a masked region only). */
   async fitCage({ mesh, mask, cage, opts }: { mesh: MeshData; mask?: Uint8Array; cage: import("../freeform/quadMesh").QuadMesh; opts: Record<string, unknown> }, progress) {
     const { compactMesh } = await import("../mesh/topology");

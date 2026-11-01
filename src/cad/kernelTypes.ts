@@ -13,6 +13,7 @@ import type {
   Vec3,
   Wire2D,
 } from "../core/types";
+import type { BrepPlan, FaceKind } from "../convert/brepPlan";
 
 /** Handle of a B-rep shape held in the kernel's registry. */
 export type ShapeId = number;
@@ -159,6 +160,19 @@ export interface IgesExportOptions {
   approximationTolerance?: number;
 }
 
+export interface PlanBuildResult {
+  id: ShapeId;
+  /** kind of every face (TopExp::MapShapes order, as in `tessellate`) */
+  faceKinds: FaceKind[];
+  /** plan faces that could not be built */
+  failedFaces: number[];
+  /** plan faces built but not valid (the caller may demote their regions to facets and rebuild) */
+  invalidFaces: number[];
+  failedEdges: number;
+  /** edges left unconnected after sewing (0 for a closed solid) */
+  freeEdges: number;
+}
+
 /** The kernel API (synchronous in OcctKernel, Promise-returning through KernelClient). */
 export interface KernelApi {
   extrude(args: ExtrudeArgs): ShapeId;
@@ -167,6 +181,8 @@ export interface KernelApi {
   bsplineSurfaceFace(args: BSplineFaceArgs): ShapeId;
   bsplinePatchesToShape(args: PatchesToShapeArgs): ShapeId;
   primitiveFace(def: PrimitiveDef, bounds: PrimitiveBounds): ShapeId;
+  /** Shape from a converter B-rep plan (STL → CAD): faces on analytic surfaces, sewn into solids. */
+  brepFromPlan(plan: BrepPlan): PlanBuildResult;
   loft(args: LoftArgs): ShapeId;
   sweep(args: SweepArgs): ShapeId;
   boolean(op: BooleanOp, a: ShapeId, b: ShapeId, opts?: BooleanOptions): ShapeId;
