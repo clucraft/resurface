@@ -14,7 +14,7 @@ import { LOD_THRESHOLD, type MeshView } from "../viewer/MeshView";
 import type { KernelClient } from "../cad/KernelClient";
 import { SceneSync } from "./SceneSync";
 import { SelectionController } from "./selection";
-import { initialUiState, type Toast, type UiState } from "./ui-state";
+import { COMPARE_MAX, COMPARE_MIN, initialUiState, type Toast, type UiState } from "./ui-state";
 import { FeatureEvaluator } from "./features";
 import { prepareMesh, markPrepared } from "./MeshRuntime";
 import type { AnyTool, ToolPointerEvent } from "../tools/Tool";
@@ -24,6 +24,7 @@ import { lazy } from "./lazy";
 import { nextFrame } from "../core/frame";
 
 let toastId = 1;
+const COMPARE_STATUS = "Compare: scan (left) vs CAD (right) — drag the divider; Esc to exit.";
 
 export class App {
   readonly doc = new Document();
@@ -51,6 +52,17 @@ export class App {
       }
       this.onMeshSelectionChanged(this.ui.get().activeMeshId ?? "");
     });
+    // the viewer's split view and the mesh triangle-edge overlays follow the UI state
+    let compare = this.ui.get().compare;
+    let fraction = this.ui.get().compareFraction;
+    this.ui.subscribe(() => {
+      const s = this.ui.get();
+      if (s.compare === compare && s.compareFraction === fraction) return;
+      const toggled = s.compare !== compare;
+      compare = s.compare;
+      fraction = s.compareFraction;
+      this.applyCompare(toggled);
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -63,6 +75,7 @@ export class App {
     viewer.on("resize", ({ width, height }) => setLineResolution(width, height));
     setLineResolution(viewer.size.width, viewer.size.height);
     viewer.showGrid = this.ui.get().showGrid;
+    this.applyCompare(false);
     this.sync = new SceneSync(this);
     this.sync.syncAll();
     viewer.fitAll("iso");
@@ -236,6 +249,33 @@ export class App {
     const mode = this.ui.get().meshDisplay;
     view.setWireframe(mode === "wireframe" && e.mesh.indices.length / 3 < 2_000_000);
     if (view.colorMode !== "map") view.setColorMode(mode === "scan-colors" && e.mesh.colors ? "scan" : "solid");
+    view.setTriangleEdges(this.ui.get().compare);
+  }
+
+  /**
+   * Turn the compare split view on or off: the scan (with its triangle edges) left of a
+   * draggable divider, the CAD bodies right of it. Tools call this after producing CAD from a
+   * scan; `fraction` optionally places the divider (0..1 from the left).
+   */
+  setCompare(on: boolean, fraction?: number): void {
+    const patch: Partial<UiState> = { compare: on };
+    if (fraction !== undefined) patch.compareFraction = THREE.MathUtils.clamp(fraction, COMPARE_MIN, COMPARE_MAX);
+    this.ui.patch(patch);
+    if (on) this.setStatus(COMPARE_STATUS);
+    else if (this.ui.get().status === COMPARE_STATUS) this.setStatus("Ready");
+  }
+
+  /** Move the compare divider (0..1 from the left edge of the viewport). */
+  setCompareFraction(fraction: number): void {
+    this.ui.patch({ compareFraction: THREE.MathUtils.clamp(fraction, COMPARE_MIN, COMPARE_MAX) });
+  }
+
+  /** Push the compare state to the viewer (and to the mesh edge overlays when it was toggled). */
+  private applyCompare(toggled: boolean): void {
+    const { compare, compareFraction } = this.ui.get();
+    this.viewer?.setCompare(compare ? compareFraction : null);
+    if (!toggled) return;
+    for (const m of this.doc.ofKind("mesh")) this.sync?.view<MeshView>(m.id)?.setTriangleEdges(compare);
   }
 
   setMeshDisplay(mode: UiState["meshDisplay"]): void {
@@ -330,7 +370,7 @@ export class App {
       ndc,
       ray,
       pick: (filter) => {
-        if (!cache.has(filter)) cache.set(filter, viewer.pickRay(ray, filter));
+        if (!cache.has(filter)) cache.set(filter, viewer.pickRay(ray, filter, ndc.x));
         return cache.get(filter) ?? null;
       },
     };
@@ -377,6 +417,7 @@ export class App {
     }
     if (e.key === "Escape") {
       if (this.tool) void this.endTool(false);
+      else if (this.ui.get().compare) this.setCompare(false);
       else this.activeMeshRuntime()?.clearSelection();
       return true;
     }

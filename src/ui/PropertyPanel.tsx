@@ -81,7 +81,7 @@ function QuickHelp() {
         <kbd>[ ]</kbd>
         <span>Brush size</span>
         <kbd>Esc</kbd>
-        <span>Clear selection / cancel tool</span>
+        <span>Cancel / exit compare / deselect</span>
         <kbd>Ctrl Z / Y</kbd>
         <span>Undo / redo</span>
       </div>

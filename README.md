@@ -22,7 +22,7 @@ geometry kernel is Open CASCADE 8 compiled to WebAssembly; rendering uses three.
 | **3D sketching** | Draw smooth curves directly on the scan (spline snapped to the surface). |
 | **CAD features** | Extrude (one side / symmetric / two sides, draft), revolve, loft through sections, surfaces from primitives, booleans (unite / subtract / intersect), fillet & chamfer with edge picking, mirror. All features stay parametric — edit a sketch or dimension and dependent bodies rebuild. |
 | **Surfacing** | **Fit Surface**: NURBS fitted to a selected region with live deviation map. **Quad Surface**: build a quad cage on the scan (or generate it from a selection); the Catmull–Clark limit surface snaps to the scan. **Autosurface**: one-click NURBS patch layout for organic shapes — G2 everywhere, G1 at extraordinary points, watertight solid when closed. |
-| **Analysis** | Real-time **deviation** colour map (scan → CAD or CAD → scan) with tolerance band and statistics; curvature map; measurements (points, planes, axes, angles). |
+| **Analysis** | Real-time **deviation** colour map (scan → CAD or CAD → scan) with tolerance band and statistics; curvature map; measurements (points, planes, axes, angles). **Compare** split view (viewport toolbar): the scan with its triangle edges left of a draggable divider, the CAD model right of it, same camera. |
 | **Export** | STEP (AP214, named bodies), IGES 5.3 (trimmed NURBS surfaces), STL of CAD bodies or of the scan. Projects save as `.rsf`. |
 
 ## Typical workflow
@@ -48,7 +48,7 @@ Built-in samples (*File → Samples*): a mechanical bracket, a turned shaft and 
 | `1`–`5` | Pick / Brush / Rectangle / Lasso / Smart select |
 | Shift / Ctrl + click | Add to / remove from selection |
 | `[` `]` | Brush size |
-| `Esc` | Clear selection / cancel tool |
+| `Esc` | Cancel tool / leave compare view / clear selection |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
 
 In the sketch editor: `L` line, `A` arc, `C` circle, `R` rectangle, `S` spline, `D` dimension,

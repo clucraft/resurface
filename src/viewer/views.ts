@@ -379,6 +379,7 @@ export class BodyView implements EntityView {
     this.removePick = viewer.addPickTarget({
       entityId: e.id,
       priority: 1,
+      layer: "body",
       enabled: () => this.group.visible && !!this.meshObj,
       raycast: (ray) => {
         rc.ray.copy(ray);

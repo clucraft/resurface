@@ -17,11 +17,19 @@ export interface PickHit {
   sub?: string | number;
 }
 
+/** Side of the compare split view: the scan mesh (left) or the CAD bodies (right). */
+export type CompareSide = "stl" | "cad";
+
 /** Anything that can be picked with a world ray. Views register themselves as pick targets. */
 export interface PickTarget {
   entityId: string;
   /** larger = picked preferentially when distances are similar (e.g. lines over meshes) */
   priority?: number;
+  /**
+   * Entity layer the target draws into. In compare (split) view "mesh" targets are pickable only
+   * left of the divider and "body" targets only right of it; untagged targets are always pickable.
+   */
+  layer?: "mesh" | "body";
   enabled(): boolean;
   raycast(ray: THREE.Ray, ctx: { pixelSize: (p: THREE.Vector3) => number; camera: THREE.Camera }): PickHit | null;
 }
@@ -84,6 +92,8 @@ export class Viewer extends Emitter<ViewerEvents> {
   private triadScene = new THREE.Scene();
   private triadCamera = new THREE.OrthographicCamera(-1.6, 1.6, 1.6, -1.6, 0.1, 10);
   showGrid = true;
+  /** compare split view: divider position from the left (0..1), or null when off */
+  private compareFraction: number | null = null;
 
   constructor(readonly container: HTMLElement) {
     super();
@@ -194,9 +204,89 @@ export class Viewer extends Emitter<ViewerEvents> {
     r.setScissorTest(false);
     r.clear(true, true, true);
     this.grid.visible = this.showGrid;
-    r.render(this.scene, this.camera);
+    if (this.compareFraction === null) r.render(this.scene, this.camera);
+    else this.renderCompare(this.compareFraction);
     this.renderTriad();
     this.updateLabels();
+  }
+
+  // -------------------------------------------------------------------------
+  // Compare (split) view
+  // -------------------------------------------------------------------------
+
+  /**
+   * Split view comparing the scan with the CAD model: left of the divider the scene is drawn
+   * without bodies, right of it without meshes; both halves share the camera. `fraction` is the
+   * divider position from the left edge (0..1); null turns the split off (normal single pass).
+   */
+  setCompare(fraction: number | null): void {
+    const f = fraction === null || !Number.isFinite(fraction) ? null : THREE.MathUtils.clamp(fraction, 0, 1);
+    if (f === this.compareFraction) return;
+    this.compareFraction = f;
+    this.requestRender();
+  }
+
+  /** Divider position (0..1 from the left) while compare view is on, else null. */
+  get compare(): number | null {
+    return this.compareFraction;
+  }
+
+  /** Divider x in CSS pixels, snapped to whole device pixels so the two scissor rects tile exactly. */
+  private compareSplitX(fraction: number): number {
+    const pr = this.renderer.getPixelRatio();
+    return Math.round(this.width * fraction * pr) / pr;
+  }
+
+  /** Which side of the divider an NDC x coordinate falls on (null when compare view is off). */
+  compareSideAt(ndcX: number): CompareSide | null {
+    if (this.compareFraction === null) return null;
+    const x = ((ndcX + 1) / 2) * this.width;
+    return x < this.compareSplitX(this.compareFraction) ? "stl" : "cad";
+  }
+
+  /**
+   * Two scissored passes over the same, already cleared colour/depth buffer (the rects are
+   * disjoint, so nothing is cleared in between). setScissor takes CSS pixels and three scales
+   * them by the pixel ratio; the split is snapped to device pixels so the halves meet exactly.
+   */
+  private renderCompare(fraction: number): void {
+    const r = this.renderer;
+    const { meshes, bodies, overlay } = this.layers;
+    const split = this.compareSplitX(fraction);
+    const meshesVisible = meshes.visible;
+    const bodiesVisible = bodies.visible;
+    // overlay objects may opt into one side with userData.compareSide = "stl" | "cad"
+    const tagged: THREE.Object3D[] = [];
+    overlay.traverse((o) => {
+      const side = o.userData.compareSide;
+      if (side === "stl" || side === "cad") tagged.push(o);
+    });
+    const taggedVisible = tagged.map((o) => o.visible);
+    const showSide = (side: CompareSide) => {
+      for (let i = 0; i < tagged.length; i++) tagged[i].visible = taggedVisible[i] && tagged[i].userData.compareSide === side;
+    };
+    r.setScissorTest(true);
+    try {
+      if (split > 0) {
+        r.setScissor(0, 0, split, this.height);
+        bodies.visible = false;
+        showSide("stl");
+        r.render(this.scene, this.camera);
+        bodies.visible = bodiesVisible;
+      }
+      if (split < this.width) {
+        r.setScissor(split, 0, this.width - split, this.height);
+        meshes.visible = false;
+        showSide("cad");
+        r.render(this.scene, this.camera);
+      }
+    } finally {
+      meshes.visible = meshesVisible;
+      bodies.visible = bodiesVisible;
+      for (let i = 0; i < tagged.length; i++) tagged[i].visible = taggedVisible[i];
+      r.setScissor(0, 0, this.width, this.height);
+      r.setScissorTest(false);
+    }
   }
 
   /** keep near/far tight around the scene to preserve depth precision */
@@ -377,15 +467,26 @@ export class Viewer extends Emitter<ViewerEvents> {
   /** Pick the closest target under an NDC coordinate. `filter` restricts by entity id. */
   pick(ndc: THREE.Vector2, filter?: (entityId: string) => boolean): PickHit | null {
     const ray = this.rayFromNdc(ndc);
-    return this.pickRay(ray, filter);
+    return this.pickRay(ray, filter, ndc.x);
   }
 
-  pickRay(ray: THREE.Ray, filter?: (entityId: string) => boolean): PickHit | null {
+  /**
+   * Pick along a camera ray. In compare view the side of the divider decides whether mesh or
+   * body targets are eligible; the side comes from `ndcX` when given, else from the ray itself.
+   */
+  pickRay(ray: THREE.Ray, filter?: (entityId: string) => boolean, ndcX?: number): PickHit | null {
+    let side: CompareSide | null = null;
+    if (this.compareFraction !== null) {
+      // any point along a camera ray projects back onto the screen position it was cast through
+      const x = ndcX ?? ray.at(Math.max(this.camera.near * 2, 1e-3), new THREE.Vector3()).project(this.camera).x;
+      side = this.compareSideAt(x);
+    }
     let best: PickHit | null = null;
     let bestScore = Infinity;
     for (const t of this.pickTargets) {
       if (!t.enabled()) continue;
       if (filter && !filter(t.entityId)) continue;
+      if ((side === "stl" && t.layer === "body") || (side === "cad" && t.layer === "mesh")) continue;
       let hit: PickHit | null = null;
       try {
         hit = t.raycast(ray, { pixelSize: this.pixelSize, camera: this.camera });

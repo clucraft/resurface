@@ -40,9 +40,17 @@ export interface UiState {
   toolId: string | null;
   meshDisplay: "shaded" | "wireframe" | "scan-colors";
   showGrid: boolean;
+  /** split view: scan mesh (with triangle edges) left of a draggable divider, CAD bodies right */
+  compare: boolean;
+  /** divider position from the left edge of the viewport (0..1) */
+  compareFraction: number;
   /** cursor position on the model, shown in the status bar */
   cursor: [number, number, number] | null;
 }
+
+/** allowed divider range in compare view */
+export const COMPARE_MIN = 0.02;
+export const COMPARE_MAX = 0.98;
 
 export const initialUiState: UiState = {
   ribbonTab: "mesh",
@@ -60,5 +68,7 @@ export const initialUiState: UiState = {
   toolId: null,
   meshDisplay: "shaded",
   showGrid: true,
+  compare: false,
+  compareFraction: 0.5,
   cursor: null,
 };

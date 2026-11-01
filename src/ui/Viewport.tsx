@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import {
   MousePointer2, Brush, SquareDashed, Lasso, WandSparkles, Maximize, Box, ArrowUp, ArrowRight, ArrowDown,
-  Grid3x3, Eye, LoaderCircle, Upload, Sparkles, Palette, X,
+  Grid3x3, Eye, LoaderCircle, Upload, Sparkles, Palette, X, SquareSplitHorizontal,
 } from "lucide-react";
 import { app } from "../app/App";
+import { CompareDivider } from "./CompareDivider";
 import type { SelectionMode } from "../app/ui-state";
 import { useEntities, useUi } from "./hooks";
 import { importFiles, openSampleMenu } from "../tools/registry";
@@ -31,6 +32,7 @@ export function Viewport() {
   const toolId = useUi((s) => s.toolId);
   const meshDisplay = useUi((s) => s.meshDisplay);
   const showGrid = useUi((s) => s.showGrid);
+  const compare = useUi((s) => s.compare);
   const entities = useEntities();
 
   useEffect(() => {
@@ -77,6 +79,8 @@ export function Viewport() {
 
   const hasData = entities.length > 0;
   const toolAllowsSelection = !toolId || app.activeTool?.allowMeshSelection;
+  const canCompare =
+    entities.some((e) => (e.kind === "mesh" || e.kind === "points") && e.visible) && entities.some((e) => e.kind === "body" && e.visible);
 
   return (
     <div
@@ -93,6 +97,7 @@ export function Viewport() {
       }}
     >
       <div ref={host} style={{ position: "absolute", inset: 0 }} />
+      <CompareDivider />
 
       {hasData && toolAllowsSelection && (
         <div className="vp-toolbar top">
@@ -170,6 +175,15 @@ export function Viewport() {
           onClick={() => app.setMeshDisplay(meshDisplay === "scan-colors" ? "shaded" : "scan-colors")}
         >
           <Palette size={16} />
+        </button>
+        <div className="sep" />
+        <button
+          className={`icon-btn${compare ? " active" : ""}`}
+          title={canCompare || compare ? "Compare STL / CAD (split view)" : "Compare STL / CAD (split view) — needs a visible mesh and a CAD body"}
+          disabled={!compare && !canCompare}
+          onClick={() => app.setCompare(!compare)}
+        >
+          <SquareSplitHorizontal size={16} />
         </button>
       </div>
 

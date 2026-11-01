@@ -308,7 +308,10 @@ function captureDepth(app: App): { width: number; height: number; data: Float32A
     side: THREE.DoubleSide,
   });
   const hidden: THREE.Object3D[] = [];
-  for (const g of [viewer.layers.references, viewer.layers.sketches, viewer.layers.overlay, viewer.layers.helpers]) {
+  const occluders = [viewer.layers.references, viewer.layers.sketches, viewer.layers.overlay, viewer.layers.helpers];
+  // in compare view the scan is shown without the CAD bodies, so they must not hide its triangles
+  if (viewer.compare !== null) occluders.push(viewer.layers.bodies);
+  for (const g of occluders) {
     if (g.visible) {
       hidden.push(g);
       g.visible = false;

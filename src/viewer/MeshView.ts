@@ -9,6 +9,7 @@
 import * as THREE from "three";
 import type { MeshData } from "../core/types";
 import type { PickHit, PickTarget, Viewer } from "./Viewer";
+import { uniqueTriangleEdges } from "./meshEdges";
 
 export interface MeshChunk {
   triStart: number;
@@ -32,6 +33,10 @@ export interface MeshViewOptions {
 const SELECT_COLOR = new THREE.Color("#ff7a1a");
 /** above this many triangles the LOD proxy is used during navigation */
 export const LOD_THRESHOLD = 3_000_000;
+/** the triangle-edge overlay is only built for meshes up to this many triangles */
+export const TRIANGLE_EDGE_LIMIT = 1_500_000;
+/** above this many triangles the edge overlay is hidden while the camera moves */
+const EDGES_WHILE_MOVING_LIMIT = 600_000;
 
 function patchBackfaceTint(mat: THREE.Material, tint = "vec3(0.42, 0.36, 0.30)") {
   mat.onBeforeCompile = (shader) => {
@@ -61,6 +66,10 @@ export class MeshView {
   private mapColors: Uint8Array | null = null;
   private visible = true;
   private wireframe = false;
+  /** triangle-edge overlay ("faceted STL" look), built lazily on first use */
+  private edgeObj: THREE.LineSegments | null = null;
+  private edgeMaterial: THREE.LineBasicMaterial | null = null;
+  private triangleEdges = false;
 
   constructor(
     private viewer: Viewer,
@@ -124,6 +133,7 @@ export class MeshView {
     return {
       entityId: this.entityId,
       priority: 0,
+      layer: "mesh",
       enabled: () => this.visible && !!this.opts.raycast,
       raycast: (ray): PickHit | null => {
         const hit = this.opts.raycast!(
@@ -169,6 +179,83 @@ export class MeshView {
       if (on) m.add(new THREE.Mesh(m.geometry, this.wireMaterial!));
     }
     this.viewer.requestRender();
+  }
+
+  /**
+   * Draw every triangle edge over the shaded mesh (the faceted STL look of the compare view).
+   * Built lazily the first time it is needed; skipped above TRIANGLE_EDGE_LIMIT triangles.
+   * Returns whether the edges are shown.
+   */
+  setTriangleEdges(on: boolean): boolean {
+    const show = on && this.triangleCount > 0 && this.triangleCount <= TRIANGLE_EDGE_LIMIT;
+    if (show === this.triangleEdges) return show;
+    this.triangleEdges = show;
+    if (show && !this.edgeObj) this.buildTriangleEdges();
+    this.updateEdgeVisibility(this.viewer.interacting);
+    // push the faces back a little so edges lying exactly on them pass the depth test
+    this.material.polygonOffset = show;
+    this.material.polygonOffsetFactor = show ? 1 : 0;
+    this.material.polygonOffsetUnits = show ? 1 : 0;
+    this.viewer.requestRender();
+    return show;
+  }
+
+  private buildTriangleEdges(): void {
+    const pos = this.mesh.positions;
+    const pairs = uniqueTriangleEdges(this.mesh.indices, pos.length / 3);
+    // typical edge length, used to fade edges that are only a few pixels long on screen
+    let sum = 0;
+    for (let i = 0; i < pairs.length; i += 2) {
+      const a = 3 * pairs[i], b = 3 * pairs[i + 1];
+      sum += Math.hypot(pos[a] - pos[b], pos[a + 1] - pos[b + 1], pos[a + 2] - pos[b + 2]);
+    }
+    const edgeLength = pairs.length ? sum / (pairs.length / 2) : 1;
+
+    const g = new THREE.BufferGeometry();
+    // share the position buffer with the chunks; only the index is new
+    g.setAttribute("position", this.geometryBase.getAttribute("position"));
+    g.setIndex(new THREE.BufferAttribute(pairs, 1));
+    const box = new THREE.Box3();
+    for (const m of this.chunkMeshes) if (m.geometry.boundingBox) box.union(m.geometry.boundingBox);
+    g.boundingBox = box;
+    g.boundingSphere = box.getBoundingSphere(new THREE.Sphere());
+
+    const mat = new THREE.LineBasicMaterial({ color: 0x10151c, transparent: true, opacity: 0.5, depthWrite: false });
+    const uniforms = { uEdgeLen: { value: edgeLength }, uPxScale: { value: 1 } };
+    // Fade by on-screen edge length: where triangles are only a pixel or two wide (a dense scan
+    // seen from afar) full-strength edges would turn the surface dark, so they become a faint
+    // texture there and reach full strength once the facets are clearly visible.
+    mat.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, uniforms);
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nuniform float uEdgeLen;\nuniform float uPxScale;\nvarying float vEdgePx;")
+        .replace("#include <project_vertex>", "#include <project_vertex>\nvEdgePx = uEdgeLen / max(-mvPosition.z * uPxScale, 1e-9);");
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", "#include <common>\nvarying float vEdgePx;")
+        .replace("#include <alphatest_fragment>", "diffuseColor.a *= mix(0.16, 1.0, smoothstep(2.5, 9.0, vEdgePx));\n#include <alphatest_fragment>");
+    };
+    mat.customProgramCacheKey = () => "mesh-triangle-edges";
+    this.edgeMaterial = mat;
+
+    const lines = new THREE.LineSegments(g, mat);
+    lines.matrixAutoUpdate = false;
+    lines.renderOrder = 1;
+    lines.userData.noBounds = true;
+    lines.userData.noPick = true;
+    lines.onBeforeRender = (_r, _s, camera) => {
+      // world size of one CSS pixel per unit of view depth
+      const cam = camera as THREE.PerspectiveCamera;
+      if (cam.isPerspectiveCamera) uniforms.uPxScale.value = (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)) / Math.max(1, this.viewer.size.height);
+      // follow section clipping applied to the mesh material by tools
+      if (mat.clippingPlanes !== this.material.clippingPlanes) mat.clippingPlanes = this.material.clippingPlanes;
+    };
+    this.edgeObj = lines;
+    this.fullGroup.add(lines);
+  }
+
+  private updateEdgeVisibility(interacting: boolean): void {
+    if (!this.edgeObj) return;
+    this.edgeObj.visible = this.triangleEdges && !(interacting && this.triangleCount > EDGES_WHILE_MOVING_LIMIT);
   }
 
   /** Switch between plain colour, scan (per-vertex RGB from the file) and a computed colour map. */
@@ -288,6 +375,7 @@ export class MeshView {
   }
 
   private updateLod(interacting: boolean): void {
+    this.updateEdgeVisibility(interacting);
     if (!this.proxyObj || this.triangleCount < LOD_THRESHOLD) return;
     this.proxyObj.visible = interacting;
     this.fullGroup.visible = !interacting;
@@ -301,10 +389,12 @@ export class MeshView {
     for (const m of this.chunkMeshes) m.geometry.dispose();
     for (const m of this.selMeshes) m?.geometry.dispose();
     this.proxyObj?.geometry.dispose();
+    this.edgeObj?.geometry.dispose();
     this.geometryBase.dispose();
     this.material.dispose();
     this.selMaterial.dispose();
     this.wireMaterial?.dispose();
+    this.edgeMaterial?.dispose();
     this.viewer.markSceneChanged();
   }
 }
