@@ -54,6 +54,8 @@ export interface PlanFace {
   loops: EdgeUse[][];
   /** region id, or -1 for faceted triangles */
   region: number;
+  /** area of the mesh triangles the face replaces (regions only): a sanity check for the built face */
+  area?: number;
   /**
    * Faces bounded only by full circles about the surface axis (a hole wall, a fillet ring): two
    * circles bound two complementary bands on a periodic surface, so these are built directly as
@@ -265,11 +267,33 @@ function placementFor(s: ConvSurface, pts: Vec3[]): SurfacePlacement {
       return { origin: s.center, z, x: seamDirection(pts, s.center, z) };
     }
     case "sphere": {
-      // keep the poles away from the face: pole axis ⟂ to the mean direction of the face
+      // keep the poles away from the face: of a few candidate pole axes (⟂ to the mean direction
+      // for a patch, the principal axes for a zone around an axis), the one the face stays
+      // farthest from — a pole inside the face makes the kernel close it into a cap
+      const dirs: Vec3[] = [];
       const m: Vec3 = [0, 0, 0];
-      for (const p of pts) for (let k = 0; k < 3; k++) m[k] += p[k] - s.center[k];
+      const cov = new Array<number>(9).fill(0);
+      for (const p of pts) {
+        const w: Vec3 = [p[0] - s.center[0], p[1] - s.center[1], p[2] - s.center[2]];
+        if (Math.hypot(...w) < 1e-12) continue;
+        const d = normalize(w);
+        dirs.push(d);
+        for (let i = 0; i < 3; i++) {
+          m[i] += d[i];
+          for (let j = 0; j < 3; j++) cov[3 * i + j] += d[i] * d[j];
+        }
+      }
       const md = Math.hypot(...m) > 1e-12 ? normalize(m) : ([1, 0, 0] as Vec3);
-      const z = perpBasis(md)[0];
+      const candidates: Vec3[] = [...perpBasis(md), ...eigenSym3(cov).vectors];
+      let z = candidates[0], best = Infinity;
+      for (const c of candidates) {
+        let worst = 0;
+        for (const d of dirs) worst = Math.max(worst, Math.abs(dot(d, c)));
+        if (worst < best - 1e-9) {
+          best = worst;
+          z = c;
+        }
+      }
       return { origin: s.center, z, x: seamDirection(pts, s.center, z) };
     }
   }
@@ -519,6 +543,56 @@ export function buildBrepPlan(mesh: MeshData, nbr: Int32Array, labels: Int32Arra
     return e;
   };
 
+  /**
+   * A region touching itself at a vertex traces one loop through that vertex twice: split it there
+   * into simple loops (an outer boundary and the hole touching it), as the kernel expects.
+   */
+  const splitPinched = (loop: number[]): number[][] => {
+    const out: number[][] = [];
+    const stack: number[] = [];
+    const at = new Map<number, number>();
+    for (const h of loop) {
+      const i = at.get(src(h));
+      if (i !== undefined) {
+        const sub = stack.splice(i);
+        for (const x of sub) at.delete(src(x));
+        out.push(sub);
+      }
+      at.set(src(h), stack.length);
+      stack.push(h);
+    }
+    if (stack.length) out.push(stack);
+    return out;
+  };
+  /** edge uses of a closed loop of boundary half-edges of face f */
+  const loopUses = (loop: number[], f: number): EdgeUse[] => {
+    // rotate to start at a junction
+    const start = loop.findIndex((h) => junction[src(h)]);
+    const uses: EdgeUse[] = [];
+    if (start < 0) {
+      // closed edge without vertices
+      const existing = heEdge[loop[0]];
+      if (existing) uses.push({ edge: Math.abs(existing) - 1, reversed: existing < 0 });
+      else uses.push({ edge: makeEdge(loop, f, true), reversed: false });
+    } else {
+      const rot = loop.slice(start).concat(loop.slice(0, start));
+      let chain: number[] = [];
+      const flush = () => {
+        if (!chain.length) return;
+        const existing = heEdge[chain[0]];
+        if (existing) uses.push({ edge: Math.abs(existing) - 1, reversed: existing < 0 });
+        else uses.push({ edge: makeEdge(chain, f, false), reversed: false });
+        chain = [];
+      };
+      for (const h of rot) {
+        if (chain.length && junction[src(h)]) flush();
+        chain.push(h);
+      }
+      flush();
+    }
+    return uses;
+  };
+
   for (let t = 0; t < nt; t++) {
     for (let k = 0; k < 3; k++) {
       const he0 = 3 * t + k;
@@ -538,37 +612,14 @@ export function buildBrepPlan(mesh: MeshData, nbr: Int32Array, labels: Int32Arra
       }
       if (!ok || he !== he0) continue; // malformed loop (non-manifold mesh): leave to the faceted fallback
       const f = faceOf[t];
-      // rotate to start at a junction
-      const start = loop.findIndex((h) => junction[src(h)]);
-      const uses: EdgeUse[] = [];
-      if (start < 0) {
-        // closed edge without vertices
-        const existing = heEdge[loop[0]];
-        if (existing) uses.push({ edge: Math.abs(existing) - 1, reversed: existing < 0 });
-        else uses.push({ edge: makeEdge(loop, f, true), reversed: false });
-      } else {
-        const rot = loop.slice(start).concat(loop.slice(0, start));
-        let chain: number[] = [];
-        const flush = () => {
-          if (!chain.length) return;
-          const existing = heEdge[chain[0]];
-          if (existing) uses.push({ edge: Math.abs(existing) - 1, reversed: existing < 0 });
-          else uses.push({ edge: makeEdge(chain, f, false), reversed: false });
-          chain = [];
-        };
-        for (const h of rot) {
-          if (chain.length && junction[src(h)]) flush();
-          chain.push(h);
-        }
-        flush();
-      }
-      faceLoops[f].push(uses);
+      for (const simple of splitPinched(loop)) faceLoops[f].push(loopUses(simple, f));
     }
   }
 
   // --- faces (orientation and seam placement from the region's triangles)
   for (let f = 0; f < nf; f++) {
-    if (f < regions.length) faces.push({ kind: regions[f].surface.kind, surface: regions[f].surface, placement: null, forward: true, loops: faceLoops[f], region: f });
+    if (f < regions.length)
+      faces.push({ kind: regions[f].surface.kind, surface: regions[f].surface, placement: null, forward: true, loops: faceLoops[f], region: f, area: regions[f].area });
     else faces.push({ kind: "faceted", surface: null, placement: null, forward: true, loops: faceLoops[f], region: -1 });
   }
   const nb = new Float64Array(3);

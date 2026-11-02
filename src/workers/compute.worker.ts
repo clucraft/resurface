@@ -140,14 +140,15 @@ const jobs: Record<string, Job> = {
   },
   /**
    * STL → CAD (Auto Convert): segment the mesh into analytic surfaces and build the B-rep plan.
-   * With `prev` + `demote`, rebuild the plan with those regions turned into facets instead.
+   * With `prev` + `demote` / `split`, rebuild the plan with those regions turned into facets or
+   * cut in two instead.
    */
   async convert(
-    { mesh, tolerance, prev, demote }: { mesh: MeshData; tolerance?: number; prev?: import("../convert").ConvertResult; demote?: number[] },
+    { mesh, tolerance, prev, demote, split }: { mesh: MeshData; tolerance?: number; prev?: import("../convert").ConvertResult; demote?: number[]; split?: number[] },
     progress,
   ) {
     const { convertMesh, replanMesh } = await import("../convert");
-    if (prev && demote) return replanMesh(mesh, prev, demote);
+    if (prev && (demote || split)) return replanMesh(mesh, prev, demote ?? [], split ?? []);
     return convertMesh(mesh, { tolerance, onProgress: progress });
   },
   /** Fit an existing cage to the scan (optionally to a masked region only). */

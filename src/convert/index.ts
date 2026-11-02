@@ -3,7 +3,8 @@
  * derive a B-rep plan the CAD kernel turns into a solid (see OcctKernel.brepFromPlan).
  * Unrecognised triangles are kept as faceted faces so the result always closes.
  */
-import type { MeshData, ProgressFn } from "../core/types";
+import type { MeshData, ProgressFn, Vec3 } from "../core/types";
+import { eigenSym3 } from "../core/linalg";
 import { buildTriangleNeighbors, meshBounds } from "../mesh/topology";
 import { weldVerticesWithMap } from "../mesh/repair";
 import { buildBrepPlan, type BrepPlan, type FaceKind } from "./brepPlan";
@@ -96,13 +97,16 @@ export function convertMesh(input: MeshData, opts: ConvertOptions = {}): Convert
 }
 
 /**
- * Rebuild the plan after demoting some regions to faceted triangles (their faces could not be
- * built validly). `prev` is an earlier result for the same mesh and options.
+ * Rebuild the plan after the kernel rejected some faces: `demoteRegions` become faceted triangles,
+ * `splitRegions` are cut in two by a plane through their axis (a face wrapping around its axis
+ * with ragged loops is often more than the kernel's face fixing can handle; each half has no seam
+ * to cross). `prev` is an earlier result for the same mesh and options.
  */
-export function replanMesh(input: MeshData, prev: Pick<ConvertResult, "labels" | "regions" | "stats">, demoteRegions: number[]): ConvertResult {
+export function replanMesh(input: MeshData, prev: Pick<ConvertResult, "labels" | "regions" | "stats">, demoteRegions: number[], splitRegions: number[] = []): ConvertResult {
   const tolerance = prev.stats.tolerance;
   const { mesh, triMap } = cleanMesh(input, tolerance * 0.1);
   const size = sizeOf(mesh);
+  const nbr = buildTriangleNeighbors(mesh);
   const demote = new Set(demoteRegions);
   const remap = new Int32Array(prev.regions.length).fill(-1);
   const regions: Region[] = [];
@@ -116,7 +120,87 @@ export function replanMesh(input: MeshData, prev: Pick<ConvertResult, "labels" |
     const c = triMap[t];
     if (c >= 0 && prev.labels[t] >= 0) labels[c] = remap[prev.labels[t]];
   }
-  return finish(mesh, triMap, buildTriangleNeighbors(mesh), labels, regions, tolerance, size);
+  for (const r of splitRegions) if (remap[r] >= 0 && !demote.has(r)) splitRegion(mesh, nbr, labels, regions, remap[r]);
+  return finish(mesh, triMap, nbr, labels, regions, tolerance, size);
+}
+
+/** Faces worth splitting before giving up on them (curved, big enough to matter, not split yet). */
+const SPLIT_MIN_TRIANGLES = 200;
+
+/** What to do with the regions whose faces the kernel could not build validly. */
+export function regionRepairs(plan: BrepPlan, regions: readonly Region[], built: { failedFaces: number[]; invalidFaces: number[] }): { split: number[]; demote: number[] } {
+  const split: number[] = [], demote: number[] = [];
+  for (const r of regionsToDemote(plan, built)) {
+    const g = regions[r];
+    if (g && g.surface.kind !== "plane" && !g.half && g.triangles >= SPLIT_MIN_TRIANGLES) split.push(r);
+    else demote.push(r);
+  }
+  return { split, demote };
+}
+
+/**
+ * Cut region `id` in two by a plane through its centre (and axis) across its widest spread; any
+ * piece that falls apart becomes its own region on the same surface.
+ */
+function splitRegion(mesh: MeshData, nbr: Int32Array, labels: Int32Array, regions: Region[], id: number) {
+  const P = mesh.positions, I = mesh.indices;
+  const g = regions[id], sf = g.surface;
+  const center: Vec3 = sf.kind === "cylinder" ? sf.origin : sf.kind === "cone" ? sf.apex : sf.kind === "plane" ? sf.origin : sf.center;
+  const axis: Vec3 | null = sf.kind === "cylinder" || sf.kind === "cone" || sf.kind === "torus" ? sf.axis : null;
+  const al = axis ? Math.hypot(...axis) : 1;
+  const tris: number[] = [];
+  for (let t = 0; t < labels.length; t++) if (labels[t] === id) tris.push(t);
+  const rel = (t: number): Vec3 => {
+    const w: Vec3 = [0, 0, 0];
+    for (let k = 0; k < 3; k++) for (let j = 0; j < 3; j++) w[j] += P[3 * I[3 * t + k] + j] / 3 - center[j] / 3;
+    if (axis) {
+      const h = (w[0] * axis[0] + w[1] * axis[1] + w[2] * axis[2]) / (al * al);
+      for (let j = 0; j < 3; j++) w[j] -= h * axis[j];
+    }
+    return w;
+  };
+  const cov = new Array<number>(9).fill(0);
+  for (const t of tris) {
+    const w = rel(t);
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) cov[3 * i + j] += w[i] * w[j];
+  }
+  const n = eigenSym3(cov).vectors[2];
+  const side = new Map<number, number>();
+  for (const t of tris) {
+    const w = rel(t);
+    side.set(t, w[0] * n[0] + w[1] * n[1] + w[2] * n[2] >= 0 ? 0 : 1);
+  }
+  // connected pieces of each side: the first keeps the region, the others get new ones
+  const piece = new Map<number, number>();
+  let first = true;
+  for (const t0 of tris) {
+    if (piece.has(t0)) continue;
+    const rid = first ? id : regions.length;
+    if (!first) regions.push({ ...g, id: rid });
+    first = false;
+    const stack = [t0];
+    piece.set(t0, rid);
+    while (stack.length) {
+      const t = stack.pop()!;
+      for (let k = 0; k < 3; k++) {
+        const u = nbr[3 * t + k];
+        if (u >= 0 && labels[u] === id && !piece.has(u) && side.get(u) === side.get(t)) {
+          piece.set(u, rid);
+          stack.push(u);
+        }
+      }
+    }
+  }
+  const area = new Map<number, number>(), count = new Map<number, number>();
+  for (const [t, rid] of piece) {
+    labels[t] = rid;
+    const a = 3 * I[3 * t], b = 3 * I[3 * t + 1], c = 3 * I[3 * t + 2];
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+    area.set(rid, (area.get(rid) ?? 0) + Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2);
+    count.set(rid, (count.get(rid) ?? 0) + 1);
+  }
+  for (const [rid, a] of area) regions[rid] = { ...regions[rid], area: a, triangles: count.get(rid)!, half: true };
 }
 
 /**

@@ -139,6 +139,13 @@ export function buildFromPlan(oc: OC, s: Scope, gp: Gp, plan: BrepPlan, onProgre
     return w;
   };
 
+  const areaMatches = (face: TopoDS_Face, meshArea: number): boolean => {
+    const p = s.add(new oc.GProp_GProps());
+    oc.BRepGProp.SurfaceProperties(face, p, false, false);
+    const a = Math.abs(p.Mass()), slack = 50 * tol * tol;
+    return a <= 1.4 * meshArea + slack && a >= 0.7 * meshArea - slack;
+  };
+
   plan.faces.forEach((f, fi) => {
     if ((fi & 127) === 0) onProgress?.(fi / plan.faces.length, "Building faces");
     try {
@@ -148,6 +155,7 @@ export function buildFromPlan(oc: OC, s: Scope, gp: Gp, plan: BrepPlan, onProgre
         return;
       }
       let face: TopoDS_Face;
+      let invalid = false;
       if (f.band && f.surface) {
         const surf = surfaceOf(f);
         const mf = surf && s.add(new oc.BRepBuilderAPI_MakeFace(surf, 0, 2 * Math.PI, f.band.v0, f.band.v1, 1e-7));
@@ -170,18 +178,32 @@ export function buildFromPlan(oc: OC, s: Scope, gp: Gp, plan: BrepPlan, onProgre
           failedFaces.push(fi);
           return;
         }
+        // build along the surface normal (loops reversed when the outward side is the back) and
+        // flip the finished face: ShapeFix on a reversed face leaves the loops inside out
         const fix = s.add(new oc.ShapeFix_Face());
-        fix.Init(surf, tol, f.forward);
-        for (const w of wires) fix.Add(w!);
+        fix.Init(surf, tol, true);
+        for (const w of wires) fix.Add(f.forward ? w! : s.add(oc.TopoDS.Wire(s.add(w!.Reversed()))));
         fix.Perform(gp.progress());
         face = s.add(fix.Face());
         if (face.IsNull()) {
           failedFaces.push(fi);
           return;
         }
-        // a face ShapeFix could not make valid is reported, so the caller can fall back to facets
-        if (!s.add(new oc.BRepCheck_Analyzer(face, true, false, false)).IsValid()) invalidFaces.push(fi);
+        if (!f.forward) face = s.add(oc.TopoDS.Face(s.add(face.Reversed())));
+        // ShapeFix can leave pcurves (loops crossing the seam of a periodic surface) outside their
+        // edge tolerances: same-parameter before judging the face; one still invalid is reported
+        // so the caller can fall back to facets
+        const valid = () => s.add(new oc.BRepCheck_Analyzer(face, true, false, false)).IsValid();
+        if (!valid()) {
+          oc.BRepLib.SameParameter(face, tol, true);
+          oc.BRepLib.UpdateTolerances(face, true);
+          invalid = !valid();
+        }
       }
+      // a valid face can still cover the wrong part of its surface (a cap closing a hole, the
+      // complement of a band): compare with the area of the triangles it replaces
+      if (!invalid && f.area !== undefined && f.surface) invalid = !areaMatches(face, f.area);
+      if (invalid) invalidFaces.push(fi);
       built.push({ face, kind: f.kind, plan: fi });
     } catch {
       failedFaces.push(fi);

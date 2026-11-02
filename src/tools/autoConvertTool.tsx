@@ -10,7 +10,7 @@ import { compute } from "../app/compute";
 import { newId } from "../core/document";
 import type { BodyEntity, MeshEntity } from "../core/entities";
 import type { ConvertResult, FaceKind } from "../convert";
-import { defaultTolerance, regionsToDemote } from "../convert";
+import { defaultTolerance, regionRepairs } from "../convert";
 import { conversionMapColors, FACE_KIND_COLOR, FACE_KIND_ORDER, FACE_KIND_PLURAL } from "../convert/colors";
 import type { PlanBuildResult, Tessellation } from "../cad/kernelTypes";
 import { Tool } from "./Tool";
@@ -109,14 +109,15 @@ export class AutoConvertTool extends Tool<AutoConvertState> {
       this.app.setProgress(0.82, "Building the CAD model");
       let built: PlanBuildResult = await k.brepFromPlan(res.plan);
       let demoted = 0;
-      // regions the kernel could not build validly fall back to facets
-      for (let pass = 0; pass < 3; pass++) {
-        const demote = regionsToDemote(res.plan, built);
-        if (!demote.length) break;
+      // regions the kernel could not build validly: big curved ones are retried in two halves,
+      // the rest fall back to facets
+      for (let pass = 0; pass < 4; pass++) {
+        const { split, demote } = regionRepairs(res.plan, res.regions, built);
+        if (!split.length && !demote.length) break;
         demoted += demote.length;
         void k.release(built.id);
-        this.app.setProgress(0.85, "Rebuilding difficult areas as facets");
-        res = await compute.run<ConvertResult>("convert", { mesh: ent.mesh, prev: res, demote });
+        this.app.setProgress(0.85, split.length ? "Rebuilding difficult areas" : "Rebuilding difficult areas as facets");
+        res = await compute.run<ConvertResult>("convert", { mesh: ent.mesh, prev: res, demote, split });
         built = await k.brepFromPlan(res.plan);
       }
       this.app.setProgress(0.92, "Checking the solid");

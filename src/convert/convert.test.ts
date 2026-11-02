@@ -4,7 +4,7 @@ import { WORLD_FRAME } from "../core/vec";
 import { OcctKernel } from "../cad/OcctKernel";
 import type { ShapeId, Tessellation } from "../cad/kernelTypes";
 import { weldExactPositions } from "../mesh/util/weld-hash";
-import { convertMesh, regionsToDemote, replanMesh } from "./index";
+import { convertMesh, regionRepairs, replanMesh } from "./index";
 import { TEST_SHAPES } from "./testShapes";
 
 const rect = (x0: number, y0: number, x1: number, y1: number): Loop2D => {
@@ -44,10 +44,10 @@ function roundTrip(id: ShapeId, lin = 0.05, ang = 15) {
   let res = convertMesh(mesh);
   const t1 = performance.now();
   let built = k.brepFromPlan(res.plan);
-  for (let pass = 0; pass < 3; pass++) {
-    const demote = regionsToDemote(res.plan, built);
-    if (!demote.length) break;
-    res = replanMesh(mesh, res, demote);
+  for (let pass = 0; pass < 4; pass++) {
+    const { split, demote } = regionRepairs(res.plan, res.regions, built);
+    if (!split.length && !demote.length) break;
+    res = replanMesh(mesh, res, demote, split);
     built = k.brepFromPlan(res.plan);
   }
   const t2 = performance.now();
@@ -143,6 +143,29 @@ describe("convertMesh — CAD STL round trips", () => {
     expect(info.volume!).toBeCloseTo(ref.volume!, 0);
   });
 
+  it("spherical ring band with a cross pin hole (gyro ring): one sphere face, no dome", () => {
+    // a band of a sphere (r 15, |z| ≤ 5.5) around a Ø24 bore, pierced by a Ø2 pin along X: the
+    // sphere face wraps around the axis and has two holes, so it is built by ShapeFix
+    const XZ = { origin: [0, 0, 0] as Vec3, xAxis: [1, 0, 0] as Vec3, yAxis: [0, 0, 1] as Vec3, zAxis: [0, -1, 0] as Vec3 };
+    const xo = Math.sqrt(15 * 15 - 5.5 * 5.5);
+    const profile: Loop2D = [
+      { type: "line", a: [12, -5.5], b: [xo, -5.5] },
+      { type: "arc", start: [xo, -5.5], mid: [15, 0], end: [xo, 5.5] },
+      { type: "line", a: [xo, 5.5], b: [12, 5.5] },
+      { type: "line", a: [12, 5.5], b: [12, -5.5] },
+    ];
+    const ring = k.revolve({ frame: XZ, profile: { loops: [profile] }, axisOrigin: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 360, solid: true });
+    const pin = k.extrude({ frame: { origin: [-20, 0, 0], xAxis: [0, 1, 0], yAxis: [0, 0, 1], zAxis: [1, 0, 0] }, profile: { loops: [circle(0, 0, 1)] }, distance: 40, solid: true });
+    const { res, info, ref, built } = roundTrip(k.boolean("cut", ring, pin), 0.02, 10);
+    expect(res.stats.kinds.sphere).toBe(1);
+    expect(res.stats.facetedTriangles).toBe(0);
+    expect(built.invalidFaces).toEqual([]);
+    expect(info.valid).toBe(true);
+    expect(info.closed).toBe(true);
+    expect(info.volume!).toBeCloseTo(ref.volume!, 0);
+    expect(info.area!).toBeCloseTo(ref.area!, 0);
+  });
+
   it("countersunk hole: cone between the hole and the top face", () => {
     const plate = k.extrude({ frame: WORLD_FRAME, profile: { loops: [rect(-20, -20, 20, 20)] }, distance: 10, solid: true });
     const XZ = { origin: [0, 0, 0] as Vec3, xAxis: [1, 0, 0] as Vec3, yAxis: [0, 0, 1] as Vec3, zAxis: [0, -1, 0] as Vec3 };
@@ -180,10 +203,10 @@ describe("convertMesh — CAD STL round trips", () => {
     const mesh = parseSTL(await buildCadSampleStl(k as never));
     let res = convertMesh(mesh);
     let built = k.brepFromPlan(res.plan);
-    for (let pass = 0; pass < 3; pass++) {
-      const demote = regionsToDemote(res.plan, built);
-      if (!demote.length) break;
-      res = replanMesh(mesh, res, demote);
+    for (let pass = 0; pass < 4; pass++) {
+      const { split, demote } = regionRepairs(res.plan, res.regions, built);
+      if (!split.length && !demote.length) break;
+      res = replanMesh(mesh, res, demote, split);
       built = k.brepFromPlan(res.plan);
     }
     const info = k.info(built.id);

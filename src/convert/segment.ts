@@ -35,6 +35,8 @@ export interface Region {
   area: number;
   rms: number;
   maxDev: number;
+  /** a piece of a region split in two because the kernel could not build it whole */
+  half?: boolean;
 }
 
 export interface Segmentation {
