@@ -15,10 +15,29 @@ function setup(dir = new THREE.Vector3(1, -1, 0.8), up?: THREE.Vector3) {
   const orbit = (dx: number, dy: number) => (c as unknown as { orbit(dx: number, dy: number): void }).orbit(dx, dy);
   const upZ = () => new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1).z;
   const pitch = () => Math.asin(cam.getWorldDirection(new THREE.Vector3()).z);
-  return { cam, orbit, upZ, pitch };
+  return { cam, controls: c, orbit, upZ, pitch };
 }
 
 describe("CameraControls turntable orbit", () => {
+  it("turns the part about the grabbed point: it stays put on screen and the view turns with the drag", () => {
+    const { cam, orbit, controls } = setup();
+    const pivot = new THREE.Vector3(3, 2, 1);
+    (controls as unknown as { pivot: THREE.Vector3 }).pivot.copy(pivot);
+    for (const [dx, dy] of [[10, 0], [0, 10], [-15, 7], [30, -20], [-40, 3], [0, -30]]) {
+      const before = pivot.clone().project(cam);
+      const forward = cam.getWorldDirection(new THREE.Vector3());
+      orbit(dx, dy);
+      cam.updateMatrixWorld();
+      const after = pivot.clone().project(cam);
+      expect(after.distanceTo(before)).toBeLessThan(1e-9);
+      // a sideways drag turns the view by exactly the drag angle about Z
+      if (dy === 0) {
+        const turn = Math.abs(dx) * controls.rotateSpeed;
+        expect(cam.getWorldDirection(new THREE.Vector3()).angleTo(forward)).toBeCloseTo(2 * Math.asin(Math.hypot(forward.x, forward.y) * Math.sin(turn / 2)), 9);
+      }
+    }
+  });
+
   it("stops at the poles instead of flipping over, and comes back", () => {
     const { orbit, upZ, pitch } = setup();
     // drag down far past looking straight down…

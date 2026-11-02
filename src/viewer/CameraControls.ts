@@ -139,8 +139,8 @@ export class CameraControls {
       const limit = Math.PI / 2 - 0.01;
       const dPitch = THREE.MathUtils.clamp(pitch - dy * this.rotateSpeed, -limit, limit) - pitch;
       const qx = new THREE.Quaternion().setFromAxisAngle(right, dPitch);
-      q = qx.multiply(qz);
       levelForward = forward.applyQuaternion(qx);
+      q = qx.multiply(qz); // (multiply works in place: qx is now the whole step)
     } else {
       const up = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
       const right = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0);
