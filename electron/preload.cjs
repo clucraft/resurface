@@ -27,6 +27,6 @@ contextBridge.exposeInMainWorld("resurfaceDesktop", {
 // Documentation tours only (RESURFACE_TOUR_DIR set): screenshot hook for the tour script.
 if (process.env.RESURFACE_TOUR_DIR) {
   contextBridge.exposeInMainWorld("resurfaceTour", {
-    capture: (name) => ipcRenderer.invoke("tour:capture", name),
+    capture: (name, rect) => ipcRenderer.invoke("tour:capture", name, rect),
   });
 }

@@ -7,3 +7,4 @@ coverage/
 /samples/out/
 release/
 .claude/worktrees/
+docs/screenshots/tour.json

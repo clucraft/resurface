@@ -143,11 +143,13 @@ function buildMenu() {
 
 const TOUR_DIR = process.env.RESURFACE_TOUR_DIR;
 const TOUR_SCRIPT = process.env.RESURFACE_TOUR_SCRIPT;
+/** window content size for tours, e.g. "1280x800" (screenshots come out at this size) */
+const [TOUR_WIDTH, TOUR_HEIGHT] = (process.env.RESURFACE_TOUR_SIZE ?? "1600x1000").split("x").map(Number);
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1600,
-    height: 1000,
+    width: TOUR_DIR ? TOUR_WIDTH : 1600,
+    height: TOUR_DIR ? TOUR_HEIGHT : 1000,
     useContentSize: !!TOUR_DIR,
     minWidth: 1100,
     minHeight: 700,
@@ -185,12 +187,16 @@ function createWindow() {
 
 /**
  * Documentation tour (RESURFACE_TOUR_DIR + RESURFACE_TOUR_SCRIPT): runs a renderer script that
- * drives the UI and calls window.resurfaceTour.capture(name) to save screenshots, then quits.
+ * drives the UI and calls window.resurfaceTour.capture(name, rect?) to save screenshots (the whole
+ * window, or just `rect` in CSS pixels), then quits.
  */
 async function runTour(win, outDir, scriptPath) {
   await fs.mkdir(outDir, { recursive: true });
-  ipcMain.handle("tour:capture", async (_e, name) => {
-    const img = await win.webContents.capturePage();
+  ipcMain.handle("tour:capture", async (_e, name, rect) => {
+    let img = await win.webContents.capturePage(rect);
+    // one image pixel per CSS pixel, whatever the display scaling
+    const width = rect?.width ?? win.getContentBounds().width;
+    if (img.getSize().width > width) img = img.resize({ width, quality: "best" });
     await fs.writeFile(path.join(outDir, `${name}.png`), img.toPNG());
     return true;
   });
