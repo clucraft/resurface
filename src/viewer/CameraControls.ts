@@ -123,19 +123,24 @@ export class CameraControls {
     const offset = cam.position.clone().sub(this.pivot);
     const targetOffset = this.target.clone().sub(this.pivot);
     let q: THREE.Quaternion;
+    let levelForward: THREE.Vector3 | null = null;
     if (this.turntable) {
-      const qz = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -dx * this.rotateSpeed);
-      const right = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0).applyQuaternion(qz).normalize();
-      // keep away from the poles so the up vector stays well-defined
+      const Z = new THREE.Vector3(0, 0, 1);
+      const qz = new THREE.Quaternion().setFromAxisAngle(Z, -dx * this.rotateSpeed);
       const forward = cam.getWorldDirection(new THREE.Vector3()).applyQuaternion(qz);
+      // tilt about the horizontal right vector (forward × Z), which raises the view for a positive
+      // angle whatever the camera's current roll; looking straight up/down, use the screen's right
+      const right = forward.clone().cross(Z);
+      if (right.lengthSq() < 1e-8) right.setFromMatrixColumn(cam.matrixWorld, 0).applyQuaternion(qz).setZ(0);
+      if (right.lengthSq() < 1e-8) right.set(1, 0, 0);
+      right.normalize();
+      // keep away from the poles so the up vector stays well-defined
       const pitch = Math.asin(THREE.MathUtils.clamp(forward.z, -1, 1));
-      let dPitch = -dy * this.rotateSpeed;
       const limit = Math.PI / 2 - 0.01;
-      if (pitch - dPitch > limit) dPitch = pitch - limit;
-      if (pitch - dPitch < -limit) dPitch = pitch + limit;
+      const dPitch = THREE.MathUtils.clamp(pitch - dy * this.rotateSpeed, -limit, limit) - pitch;
       const qx = new THREE.Quaternion().setFromAxisAngle(right, dPitch);
       q = qx.multiply(qz);
-      cam.up.set(0, 0, 1);
+      levelForward = forward.applyQuaternion(qx);
     } else {
       const up = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
       const right = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0);
@@ -148,7 +153,12 @@ export class CameraControls {
     targetOffset.applyQuaternion(q);
     cam.position.copy(this.pivot).add(offset);
     this.target.copy(this.pivot).add(targetOffset);
-    cam.quaternion.premultiply(q);
+    if (levelForward) {
+      // turntable: Z stays up on screen (also levels a camera left rolled or upside down by a
+      // sketch view or the trackball)
+      cam.up.set(0, 0, 1);
+      cam.lookAt(cam.position.clone().add(levelForward));
+    } else cam.quaternion.premultiply(q);
     cam.updateMatrixWorld();
   }
 
